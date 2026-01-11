@@ -14,3 +14,8 @@ postgres_data/
 *.mov
 *.mp4
 test_upload.txt
+
+
+# Database Data (Never commit this!)
+server/postgres_data/
+postgres_data/
