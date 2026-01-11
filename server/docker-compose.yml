@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  seaweedfs:
+    image: ghcr.io/chrislusf/seaweedfs:latest
+    container_name: seaweedfs
+    restart: unless-stopped
+    ports:
+      - "9333:9333" # Master UI / Port
+      - "8333:8333" # S3 Port
+      - "8888:8888" # Filer Port (Filesystem view)
+      - "8080:8080" # Volume Port (Internal usage mostly, can expose if needed)
+    command: >
+      server
+      -dir=/data/ssd,/data/hdd
+      -volume.disk=ssd,hdd
+      -volume.max=200
+      -s3
+      -s3.port=8333
+      -filer
+      -filer.port=8888
+      -master.port=9333
+      -ip.bind=0.0.0.0
+      -master.defaultReplication=000
+      -master.volumeSizeLimitMB=4000
+      -volume.inflightUploadDataTimeout=60m
+      -idleTimeout=3600
+    volumes:
+      # This maps the folder on your HOST to the container.
+      # CRITICAL: If you don't do this, data vanishes on restart.
+      - /mnt/FastSSD/seaweed_data:/data/ssd
+      - /mnt/pool/SlowHDD/seaweed_data:/data/hdd
+      - /mnt/FastSSD/seaweed_temp:/tmp
+    environment:
+      - WEED_S3_access_key=my_access_key      # Optional: Secure your S3
+      - WEED_S3_secret_key=my_secret_key      # Optional: Secure your S3
+  # THE BRAIN
+  db:
+    image: postgres:15-alpine
+    container_name: asset-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: CHANGE_ME_IN_DOT_ENV  # Change this!
+      POSTGRES_DB: asset_system
+    ports:
+      - "5432:5432"  # Expose port so your MacBook API can connect
+    volumes:
+      # Persistent storage on your HDD or SSD
+      - ./postgres_data:/var/lib/postgresql/data
+
+  asset-api:
+    build: ./app  # It will look for the Dockerfile here
+    container_name: asset-hub-api
+    restart: always
+    ports:
+      - "8005:8000"  # Expose API to the world
+    depends_on:
+      - db
+      - seaweedfs
+    environment:
+      # INTERNAL CONNECTIONS (Docker-to-Docker uses service names)
+      - DATABASE_URL=postgresql://admin:CHANGE_ME_IN_DOT_ENV@db:5432/asset_system
+      - SEAWEED_MASTER_URL=http://seaweedfs:9333
+
+      # EXTERNAL CONFIG (What the API tells the Client)
+      - PUBLIC_ACCESS_HOST=192.168.178.161

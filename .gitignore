@@ -1,0 +1,16 @@
+# Python / uv
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Data (NEVER commit these!)
+seaweed_data/
+postgres_data/
+*.mov
+*.mp4
+test_upload.txt
