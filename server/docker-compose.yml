@@ -14,7 +14,7 @@ services:
       server
       -dir=/data/ssd,/data/hdd
       -volume.disk=ssd,hdd
-      -volume.max=200
+      -volume.max=1000
       -s3
       -s3.port=8333
       -filer
