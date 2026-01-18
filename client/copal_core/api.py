@@ -1,5 +1,5 @@
 import requests
-from .config import ENDPOINTS
+from .config import ENDPOINTS, API_BASE
 
 def handshake(project_name, local_assets):
     """Asks server which files are missing."""
@@ -44,3 +44,17 @@ def get_manifest(project, tag):
         return None
     resp.raise_for_status()
     return resp.json()
+
+# --- NEW FUNCTION ---
+def get_versions(project_name):
+    """Fetches list of versions from server (Newest First)."""
+    # Matches the endpoint we added to main.py
+    url = f"{API_BASE}/projects/{project_name}/versions"
+    try:
+        resp = requests.get(url)
+        if resp.status_code == 404:
+            return [] 
+        resp.raise_for_status()
+        return resp.json() # Returns list like ['v1.2', 'v1.1']
+    except Exception:
+        return []

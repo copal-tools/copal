@@ -2,7 +2,7 @@ import os
 import sys
 import getpass
 import time
-from copal_core import fs, api, transport
+from copal_core import fs, api, transport, versioning
 from copal_core.config import SETTINGS # <--- NEW IMPORT
 from copal_core.sync import SyncEngine
 
@@ -60,13 +60,32 @@ def do_push():
     if not project:
         project = folder_name # Use the default if user hit Enter
 
-    # --- 3. VERSION TAG ---
-    # (In the future we will fetch the 'next' version here automatically)
-    tag = input("Version Tag (e.g. v1.0): ").strip()
-    if not tag:
-        print("❌ Error: Version Tag cannot be empty.")
-        input("Press Enter...")
-        return
+    # --- SMART VERSIONING ---
+    print("☁️  Checking remote versions...")
+    existing_tags = api.get_versions(project)
+    
+    default_tag = "v1.0"
+    if existing_tags:
+        latest = existing_tags[0] 
+        default_tag = versioning.increment_tag(latest)
+        print(f"ℹ️  Latest on server: {latest}")
+    else:
+        print("ℹ️  New Project (No remote versions found)")
+
+    while True:
+        tag_input = input(f"Version Tag [Default: {default_tag}]: ").strip()
+        
+        if not tag_input:
+            tag = default_tag
+        else:
+            tag = versioning.ensure_prefix(tag_input)
+            
+        is_valid, err_msg = versioning.validate_push_tag(tag, existing_tags)
+        if is_valid:
+            break
+        print(f"❌ Error: {err_msg}")
+        
+    print(f"✅ Selected: {tag}")
         
     # --- 4. COMMIT MESSAGE ---
     default_msg = f"Update {tag}"
@@ -141,7 +160,41 @@ def do_pull():
     
     # 1. Inputs
     project = input("Project Name: ").strip()
-    tag = input("Version Tag: ").strip()
+    if not project: return
+
+    # --- SMART SELECTION MENU ---
+    print("☁️  Fetching history...")
+    versions = api.get_versions(project)
+    
+    if not versions:
+        print("❌ No versions found for this project.")
+        input("Press Enter...")
+        return
+
+    print("\n--- Available Versions ---")
+    for i, v in enumerate(versions[:10]):
+        label = " (Latest)" if i == 0 else ""
+        print(f"   {i+1}. {v}{label}")
+    print("--------------------------")
+    
+    tag = ""
+    while not tag:
+        choice = input(f"Select Version [1-{len(versions)}] or type 'latest': ").strip().lower()
+        
+        if choice in ["", "latest", "l"]:
+            tag = versions[0]
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(versions):
+                tag = versions[idx]
+            else:
+                print("❌ Invalid number.")
+        else:
+            tag = versioning.ensure_prefix(choice)
+            if tag not in versions:
+                 print(f"⚠️  Warning: '{tag}' not found in history list. Trying anyway...")
+
+    print(f"✅ Selected: {tag}")
     
     # Default to current folder + Project Name
     cwd = os.getcwd()

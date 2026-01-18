@@ -300,26 +300,24 @@ def checkout_version(project_name: str, version_tag: str, db: Session = Depends(
 def get_project_versions(project_name: str, db: Session = Depends(get_db)):
     print(f"Fetching versions for: {project_name}")
     
-    # We join Projects -> Commits to find tags associated with this name
-    # We order by 'c.id DESC' because higher ID = newer commit.
+    # FIX: Sort by 'created_at', NOT 'id' (since ID is a random UUID)
     query = text("""
         SELECT c.version_tag
         FROM commits c
         JOIN projects p ON c.project_id = p.id
         WHERE p.name = :name
-        ORDER BY c.id DESC
+        ORDER BY c.created_at DESC
     """)
     
     rows = db.execute(query, {"name": project_name}).fetchall()
     
+    # Debug print to server logs to see what's happening
+    print(f"Found {len(rows)} versions: {rows}")
+
     if not rows:
-        # It is not an error if a project has no versions yet, 
-        # just return empty list.
-        # But if the project doesn't exist at all, we still just return empty list
-        # to keep the client logic simple (New Project).
         return []
 
-    # Flatten the list of tuples [('v1.2',), ('v1.1',)] -> ['v1.2', 'v1.1']
+    # Flatten list of tuples
     tags = [row[0] for row in rows]
     return tags
 
