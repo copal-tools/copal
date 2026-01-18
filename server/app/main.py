@@ -296,5 +296,32 @@ def checkout_version(project_name: str, version_tag: str, db: Session = Depends(
     }
 
 
+@app.get("/projects/{project_name}/versions")
+def get_project_versions(project_name: str, db: Session = Depends(get_db)):
+    print(f"Fetching versions for: {project_name}")
+    
+    # We join Projects -> Commits to find tags associated with this name
+    # We order by 'c.id DESC' because higher ID = newer commit.
+    query = text("""
+        SELECT c.version_tag
+        FROM commits c
+        JOIN projects p ON c.project_id = p.id
+        WHERE p.name = :name
+        ORDER BY c.id DESC
+    """)
+    
+    rows = db.execute(query, {"name": project_name}).fetchall()
+    
+    if not rows:
+        # It is not an error if a project has no versions yet, 
+        # just return empty list.
+        # But if the project doesn't exist at all, we still just return empty list
+        # to keep the client logic simple (New Project).
+        return []
+
+    # Flatten the list of tuples [('v1.2',), ('v1.1',)] -> ['v1.2', 'v1.1']
+    tags = [row[0] for row in rows]
+    return tags
+
 
 # Run with: uv run uvicorn main:app --reload
