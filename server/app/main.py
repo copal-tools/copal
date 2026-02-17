@@ -322,4 +322,54 @@ def get_project_versions(project_name: str, db: Session = Depends(get_db)):
     return tags
 
 
+
+@app.get("/projects/{project_name}/metadata")
+def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
+    print(f"Fetching metadata for: {project_name}")
+    
+    # 1. Get Project & Latest Commit Info
+    # We select the project + the most recent commit data
+    query_info = text("""
+        SELECT p.id, p.created_at, c.id, c.version_tag, c.author_name, c.created_at, c.message
+        FROM projects p
+        JOIN commits c ON p.id = c.project_id
+        WHERE p.name = :name
+        ORDER BY c.created_at DESC
+        LIMIT 1
+    """)
+    
+    row = db.execute(query_info, {"name": project_name}).fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found or has no versions")
+        
+    project_id, p_created, commit_id, tag, author, c_created, msg = row
+    
+    # 2. Calculate Total Size of this Version
+    # Sum the size_bytes of all assets linked to this commit
+    query_size = text("""
+        SELECT SUM(a.size_bytes)
+        FROM project_files pf
+        JOIN assets a ON pf.asset_id = a.id
+        WHERE pf.commit_id = :cid
+    """)
+    
+    size_result = db.execute(query_size, {"cid": commit_id}).fetchone()
+    total_bytes = size_result[0] if size_result[0] else 0
+    
+    # 3. Return the JSON Package
+    return {
+        "project": project_name,
+        "latest_version": tag,
+        "author": author,
+        "updated_at": c_created.isoformat(), # "2024-02-14T12:00:00..."
+        "created_at": p_created.isoformat(),
+        "total_size_bytes": total_bytes,
+        "total_size_mb": round(total_bytes / (1024 * 1024), 2),
+        "message": msg
+    }
+
+
+
+
 # Run with: uv run uvicorn main:app --reload

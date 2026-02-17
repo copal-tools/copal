@@ -2,7 +2,7 @@ import os
 import sys
 import getpass
 import time
-from copal_core import fs, api, transport, versioning
+from copal_core import fs, api, transport, versioning, registry
 from copal_core.config import SETTINGS # <--- NEW IMPORT
 from copal_core.sync import SyncEngine
 
@@ -149,6 +149,9 @@ def do_push():
     try:
         api.commit(project, tag, msg, author, local_assets)
         print(f"\n✅ SUCCESS! Project '{project}' version '{tag}' saved.")
+        fs.save_local_state(root_dir, project, tag)
+        registry.register_project(project, root_dir, tag)
+        print("💾 Added to Recent Projects list.")
     except Exception as e:
         print(f"❌ Commit Failed: {e}")
 
@@ -287,6 +290,7 @@ def do_pull():
     
     # Save state so we remember this project
     fs.save_local_state(target_dir, project, tag)
+    registry.register_project(project, target_dir, tag)
     
     input("\nPress Enter to return to menu...")
 

@@ -8,4 +8,5 @@ dependencies = [
     "argparse>=1.4.0",
     "pathspec>=0.12.1",
     "requests>=2.32.5",
+    "textual>=7.3.0",
 ]
