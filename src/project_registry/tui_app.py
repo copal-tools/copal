@@ -14,8 +14,8 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical, Horizontal
-from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Label, Rule, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import DataTable, Footer, Header, Input, Label, Rule, Static
 
 from project_registry.config import DATA_DIR
 from project_registry.pm import days_ago, fmt_h, load_project_yaml, load_registry
@@ -38,6 +38,19 @@ def _active_session() -> dict | None:
             return json.loads(r.read()) or None
     except Exception:
         return None
+
+
+def _service_call(method: str, endpoint: str, body: dict | None = None) -> dict:
+    cfg  = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
+    port = cfg.get("port", 5123)
+    data = json.dumps(body).encode() if body is not None else None
+    req  = urllib.request.Request(
+        f"http://127.0.0.1:{port}{endpoint}",
+        data=data, method=method,
+        headers={"X-API-Key": cfg["api_key"], "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read())
 
 
 def _elapsed(start_iso: str) -> str:
@@ -134,6 +147,44 @@ def _detail_data(project: dict) -> dict:
 
 
 # ── Screens ────────────────────────────────────────────────────────────────────
+
+class TimerStartModal(ModalScreen):
+    """Overlay that captures an optional work description before starting a timer."""
+
+    DEFAULT_CSS = """
+    TimerStartModal {
+        align: center middle;
+    }
+    #modal-box {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #modal-hint {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label("What are you working on?")
+            yield Input(placeholder="description (optional)", id="desc-input")
+            yield Static("[dim]Enter to start  •  Esc to cancel[/dim]", id="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
 
 class DashboardScreen(Screen):
     BINDINGS = [
@@ -313,8 +364,38 @@ class ProjectDetailScreen(Screen):
     def action_refresh(self) -> None:
         self._refresh_data()
 
-    def action_toggle_timer(self) -> None:
-        self.notify("Timer actions coming in next build.", title="Not yet")
+    async def action_toggle_timer(self) -> None:
+        session = _active_session()
+        pid     = self._data.get("id")
+
+        if session and session.get("project_id") == pid:
+            # Timer is running on this project — stop it
+            try:
+                resp = _service_call("POST", "/stop", {"reason": "manual"})
+                if resp.get("stopped"):
+                    self.notify(
+                        f"{fmt_h(resp.get('duration_sec', 0))} logged.",
+                        title="■ Stopped",
+                    )
+            except Exception as e:
+                self.notify(str(e), title="Error", severity="error")
+        else:
+            # No timer (or timer on different project) — ask for description, then start
+            description = await self.app.push_screen_wait(TimerStartModal())
+            if description is None:
+                return  # user cancelled
+            try:
+                _service_call("POST", "/start", {
+                    "projectId":   pid,
+                    "description": description or None,
+                    "phase":       self._data.get("phase"),
+                })
+                label = f" — {description}" if description else ""
+                self.notify(f"{self._data.get('name','')}{label}", title="● Started")
+            except Exception as e:
+                self.notify(str(e), title="Error", severity="error")
+
+        self._refresh_data()
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
