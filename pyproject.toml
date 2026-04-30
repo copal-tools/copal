@@ -15,6 +15,7 @@ pm           = "project_registry.pm:main"
 task-tracker = "project_registry.task_tracker:main"
 project      = "project_registry.project_record:main"
 tt           = "project_registry.time_cli:main"
+deliver      = "project_registry.deliver_cli:main"
 
 [build-system]
 requires = ["hatchling"]

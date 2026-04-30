@@ -88,15 +88,16 @@ def _project_exists(pid: str):
 def stop_current(reason="manual"):
     cur = _read_json(CUR)
     if not cur:
-        return False
-    start = datetime.fromisoformat(cur["start"].replace("Z", "+00:00"))
-    end   = now()
+        return None
+    start        = datetime.fromisoformat(cur["start"].replace("Z", "+00:00"))
+    end          = now()
+    duration_sec = int((end - start).total_seconds())
     append_session({
         "session_id":   cur["session_id"],
         "project_id":   cur["project_id"],
         "started_at":   cur["start"],
         "ended_at":     iso(end),
-        "duration_sec": int((end - start).total_seconds()),
+        "duration_sec": duration_sec,
         "phase":        cur.get("phase"),
         "description":  cur.get("description"),
         "tool":         cur.get("tool"),
@@ -106,7 +107,7 @@ def stop_current(reason="manual"):
         os.remove(CUR)
     except FileNotFoundError:
         pass
-    return True
+    return {"project_id": cur["project_id"], "duration_sec": duration_sec}
 
 
 # ── Idle auto-stop ─────────────────────────────────────────────────────────────
@@ -194,8 +195,12 @@ def start():
 def stop():
     if not _auth_ok(request):
         return ("unauthorized", 401)
-    reason = (request.get_json(silent=True) or {}).get("reason", "manual")
-    return {"ok": True, "stopped": stop_current(reason)}
+    reason  = (request.get_json(silent=True) or {}).get("reason", "manual")
+    stopped = stop_current(reason)
+    if stopped:
+        return {"ok": True, "stopped": True,
+                "project_id": stopped["project_id"], "duration_sec": stopped["duration_sec"]}
+    return {"ok": True, "stopped": False}
 
 
 @app.post("/ping")

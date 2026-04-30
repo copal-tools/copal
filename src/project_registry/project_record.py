@@ -8,21 +8,24 @@
 #   project phase production
 #   project validate
 #   project sync-time
+#   project copalvx-update --project-name NAME --version TAG
 
 import argparse
 import json
 import sys
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-from project_registry.config import SESSIONS_LOG
+from project_registry.config import SESSIONS_LOG, DATA_DIR
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 VALID_TYPES      = {"personal", "tlc", "client"}
-VALID_CATEGORIES = {"tvc", "reel", "brand", "social", "personal", "other"}
+VALID_CATEGORIES = {"tvc", "reel", "brand", "social", "personal", "digital-signage", "other"}
 VALID_PHASES     = ["concept", "production", "delivery", "archive"]
 PHASE_ORDER      = {p: i for i, p in enumerate(VALID_PHASES)}
 
@@ -196,6 +199,27 @@ def set_field(record: dict, dotted: str, raw_value: str) -> dict:
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
+def _active_session_for(project_id: str) -> dict | None:
+    """Return the active task-tracker session if it belongs to this project. Non-fatal."""
+    try:
+        cfg_path = DATA_DIR / "config.json"
+        if not cfg_path.exists():
+            return None
+        cfg  = json.loads(cfg_path.read_text(encoding="utf-8"))
+        port = cfg.get("port", 5123)
+        req  = urllib.request.Request(
+            f"http://127.0.0.1:{port}/state",
+            headers={"X-API-Key": cfg["api_key"]},
+        )
+        with urllib.request.urlopen(req, timeout=2) as r:
+            state = json.loads(r.read())
+        if state and state.get("project_id") == project_id:
+            return state
+    except Exception:
+        pass
+    return None
+
+
 def cmd_show(args):
     yaml_path, record = resolve_project(args)
 
@@ -217,6 +241,14 @@ def cmd_show(args):
         print(f"  Phase    : {phase}  (entered {entered.strftime('%Y-%m-%d')}, {days_in}d ago)")
     else:
         print(f"  Phase    : —")
+
+    # Active session (non-fatal — skipped silently if service is down)
+    active = _active_session_for(proj_id)
+    if active:
+        elapsed_s = int((datetime.now(timezone.utc) -
+                         datetime.fromisoformat(active["start"].replace("Z", "+00:00"))).total_seconds())
+        desc_str = f"  {active['description']}" if active.get("description") else ""
+        print(f"  Active   : ⏱ {fmt_duration(elapsed_s)}{desc_str}")
 
     # Deadline
     deadline = record.get("deadline")
@@ -263,16 +295,28 @@ def cmd_show(args):
     for ph, secs in by_phase.items():
         print(f"  {ph:<10}: {fmt_duration(secs)}")
 
-    # Latest deliverable
+    # CopalVX
+    cvx = record.get("copalvx") or {}
+    if cvx.get("last_push") or cvx.get("project_name"):
+        print(f"\n── CopalVX {'─' * 43}\n")
+        if cvx.get("project_name"):
+            print(f"  Project  : {cvx['project_name']}")
+        if cvx.get("last_push_version"):
+            last_push_date = str(cvx.get("last_push", ""))[:10]
+            print(f"  Last push: {cvx['last_push_version']}  ({last_push_date})")
+
+    # Deliverables
     delivs = record.get("deliverables") or []
+    print(f"\n── Deliverables {'─' * 37}\n")
     if delivs:
         last = delivs[-1]
-        d_type = last.get("type", "?")
+        d_type  = last.get("type", "?")
         d_recip = last.get("recipient", "")
-        d_when = str(last.get("delivered_at", ""))[:10]
-        recip_str = f" → {d_recip}" if d_recip else ""
-        print(f"\n── Latest Deliverable {'─' * 31}\n")
+        d_when  = str(last.get("delivered_at", ""))[:10]
+        recip_str = f" -> {d_recip}" if d_recip else ""
         print(f"  {last.get('name', '?')}  [{d_type}{recip_str}]  {d_when}")
+    else:
+        print(f"  No deliverables logged.")
 
     # Tags / notes
     tags  = record.get("tags") or []
@@ -457,6 +501,23 @@ def cmd_sync_time(args):
     print(f"Synced {len(new_entries)} new session(s). Total in record: {total}")
 
 
+def cmd_copalvx_update(args):
+    # Write CopalVX push metadata into the copalvx block of project.yaml.
+    # Called by the CopalVX post-push hook — not intended for manual use.
+    # The copalvx block is readonly to `project set` deliberately; this command
+    # is the only authorised writer.
+    yaml_path, record = resolve_project(args)
+
+    # Ensure the copalvx key exists before updating sub-fields
+    record.setdefault("copalvx", {})
+    record["copalvx"]["project_name"]       = args.project_name
+    record["copalvx"]["last_push"]          = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    record["copalvx"]["last_push_version"]  = args.version
+
+    save_yaml(yaml_path, record)
+    print(f"copalvx block updated: {args.project_name} @ {args.version}")
+
+
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def _add_location_args(parser):
@@ -467,6 +528,8 @@ def _add_location_args(parser):
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap  = argparse.ArgumentParser(
         prog="project",
         description="Read, write, and query project.yaml records.",
@@ -501,15 +564,22 @@ def main():
     p_sync = sub.add_parser("sync-time", help="Pull sessions from sessions.jsonl into time_entries (idempotent)")
     _add_location_args(p_sync)
 
+    # copalvx-update — written by the CopalVX post-push hook, not for manual use
+    p_cvu = sub.add_parser("copalvx-update", help="Write CopalVX push metadata into project.yaml (called by CopalVX hook)")
+    p_cvu.add_argument("--project-name", required=True, help="CopalVX project name used as the server-side identifier")
+    p_cvu.add_argument("--version",      required=True, help="CopalVX version tag that was just pushed (e.g. v1.3)")
+    _add_location_args(p_cvu)
+
     args = ap.parse_args()
 
     dispatch = {
-        "show":       cmd_show,
-        "get":        cmd_get,
-        "set":        cmd_set,
-        "phase":      cmd_phase,
-        "validate":   cmd_validate,
-        "sync-time":  cmd_sync_time,
+        "show":             cmd_show,
+        "get":              cmd_get,
+        "set":              cmd_set,
+        "phase":            cmd_phase,
+        "validate":         cmd_validate,
+        "sync-time":        cmd_sync_time,
+        "copalvx-update":   cmd_copalvx_update,
     }
     dispatch[args.cmd](args)
 

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import yaml
 
-from project_registry.config import DATA_DIR, SESSIONS_LOG
+from project_registry.config import DATA_DIR, SESSIONS_LOG, REGISTRY
 
 
 # ── Service client ─────────────────────────────────────────────────────────────
@@ -64,6 +64,20 @@ def _api(method: str, endpoint: str, body: dict | None = None) -> dict:
         print("tip:   run `pm install-service` to set it up, or check `pm service-status`",
               file=sys.stderr)
         sys.exit(1)
+
+
+# ── Registry helpers ──────────────────────────────────────────────────────────
+
+def _project_name(pid: str) -> str:
+    """Return the human-readable project name for a given ID, or the ID itself."""
+    try:
+        items = json.loads(REGISTRY.read_text(encoding="utf-8"))
+        for item in items:
+            if item.get("id") == pid:
+                return item.get("name") or pid
+    except Exception:
+        pass
+    return pid
 
 
 # ── Project detection ──────────────────────────────────────────────────────────
@@ -146,7 +160,10 @@ def cmd_start(args):
 def cmd_stop(args):
     resp = _api("POST", "/stop", {"reason": "manual"})
     if resp.get("stopped"):
-        print("■  Session stopped.")
+        dur     = resp.get("duration_sec")
+        pid     = resp.get("project_id", "")
+        dur_str = fmt_duration(dur) if dur is not None else "?"
+        print(f"■  Stopped.  {dur_str} logged  ({_project_name(pid)})")
     else:
         print("No active session to stop.")
 
@@ -168,7 +185,8 @@ def cmd_status(args):
     tool_str  = f"  [{tool}]" if tool else ""
     phase_str = f"  ({phase})" if phase else ""
 
-    print(f"  Project : {state['project_id']}")
+    pid = state["project_id"]
+    print(f"  Project : {_project_name(pid)}  ({pid})")
     print(f"  Task    : {desc}{tool_str}{phase_str}")
     print(f"  Elapsed : {fmt_duration(elapsed)}")
 
@@ -225,6 +243,8 @@ def cmd_log(args):
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap  = argparse.ArgumentParser(prog="tt", description="Time tracking CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

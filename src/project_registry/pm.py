@@ -112,11 +112,39 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
         print(f"    Please enter one of: {options}")
 
 
+# ── Quick-init presets ─────────────────────────────────────────────────────────
+
+QUICK_PRESETS = {
+    "tactical": {
+        "type":          "tlc",
+        "category":      "tvc",
+        "client":        "Public",
+        "director":      "",
+        "producer":      "",
+        "collaborators": [{"name": "", "role": "audio"}],
+    },
+    "ds": {
+        "type":          "tlc",
+        "category":      "digital-signage",
+        "client":        "Public",
+        "director":      None,
+        "producer":      None,
+        "collaborators": [],
+    },
+}
+
+_YAML_HEADER = (
+    "# project.yaml — Project Record v1\n"
+    "# Reference: schema/project-record.yaml\n\n"
+)
+
+
 # ── project.yaml builder ───────────────────────────────────────────────────────
 
 def build_project_record(pid: str, name: str, proj_type: str, category: str,
                           client_name, client_contact, director, producer,
-                          deadline, budget, rate, est_hours) -> dict:
+                          deadline, budget, rate, est_hours,
+                          collaborators=None) -> dict:
     return {
         "schema_version": 1,
 
@@ -135,7 +163,7 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
         "people": {
             "director":      director,
             "producer":      producer,
-            "collaborators": [],
+            "collaborators": collaborators if collaborators is not None else [],
         },
 
         # Timeline
@@ -179,7 +207,7 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
-def cmd_init(name: str, base_dir: Path, use_increment: bool):
+def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None = None):
     pid, root = compute_id_and_path(name, base_dir, use_increment)
 
     if root.exists() and not use_increment:
@@ -190,26 +218,43 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool):
     print(f"\nInitialising: {name}")
     print(f"ID:           {pid}\n")
 
-    proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
-    category  = ask_choice("Category", ["tvc", "reel", "brand", "social", "personal", "other"], "tvc")
+    if preset:
+        p              = QUICK_PRESETS[preset]
+        proj_type      = p["type"]
+        category       = p["category"]
+        client_name    = p["client"]
+        client_contact = None
+        director       = p["director"]
+        producer       = p["producer"]
+        collaborators  = p["collaborators"]
+        deadline = budget = rate = est_hours = None
+        print(f"  [{preset}]  {proj_type} / {category} / {client_name}")
+    else:
+        proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
+        category  = ask_choice(
+            "Category",
+            ["tvc", "reel", "brand", "social", "personal", "digital-signage", "other"],
+            "tvc",
+        )
 
-    client_name    = None
-    client_contact = None
-    if proj_type != "personal":
-        client_name    = ask("Client name")
-        client_contact = ask("Client contact (name or email)")
+        client_name    = None
+        client_contact = None
+        if proj_type != "personal":
+            client_name    = ask("Client name")
+            client_contact = ask("Client contact (name or email)")
 
-    director = ask("Director")
-    producer = ask("Producer")
-    deadline = ask("Deadline (YYYY-MM-DD)")
+        director      = ask("Director")
+        producer      = ask("Producer")
+        deadline      = ask("Deadline (YYYY-MM-DD)")
+        collaborators = None
 
-    budget    = None
-    rate      = None
-    est_hours = None
-    if proj_type != "personal":
-        budget    = ask("Quoted budget (EUR)")
-        rate      = ask("Rate per hour (EUR)")
-        est_hours = ask("Estimated hours")
+        budget    = None
+        rate      = None
+        est_hours = None
+        if proj_type != "personal":
+            budget    = ask("Quoted budget (EUR)")
+            rate      = ask("Rate per hour (EUR)")
+            est_hours = ask("Estimated hours")
 
     # Create folder structure
     root.mkdir(parents=True, exist_ok=True)
@@ -220,10 +265,13 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool):
     record    = build_project_record(pid, name, proj_type, category,
                                      client_name, client_contact,
                                      director, producer,
-                                     deadline, budget, rate, est_hours)
+                                     deadline, budget, rate, est_hours,
+                                     collaborators=collaborators)
     yaml_path = root / "project.yaml"
-    with yaml_path.open("w", encoding="utf-8") as f:
-        yaml.dump(record, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    yaml_path.write_text(
+        _YAML_HEADER + yaml.dump(record, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
 
     # Register
     upsert_registry(pid, name, root)
@@ -232,6 +280,7 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool):
     print(f"  project.yaml   : {yaml_path}")
     print(f"  registry       : {REG}")
     print(f"\n{pid}")
+    print(f"\n  Next: cd into the project folder and run  tt start  to begin tracking.")
 
 
 def cmd_list():
@@ -257,7 +306,7 @@ def cmd_register(path: Path):
         print("error: project.yaml is missing the 'id' field.", file=sys.stderr)
         sys.exit(1)
     upsert_registry(pid, name, path)
-    print(f"registered: {pid} → {path}")
+    print(f"registered: {pid} -> {path}")
 
 
 def cmd_scan(directory: Path):
@@ -320,7 +369,9 @@ _PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist
 def _task_tracker_bin() -> Path:
     """Resolve the task-tracker executable (same venv as this process)."""
     bin_dir = Path(sys.executable).parent
-    binary  = bin_dir / "task-tracker"
+    # Windows entry-points are installed as .exe; other platforms have no extension
+    name   = "task-tracker.exe" if sys.platform == "win32" else "task-tracker"
+    binary = bin_dir / name
     if not binary.exists():
         print("error: task-tracker binary not found. Run `uv sync` first.", file=sys.stderr)
         sys.exit(1)
@@ -384,17 +435,53 @@ def cmd_install_service():
         print(f"\n  Logs    : {DATA}/service.{{out,err}}.log")
 
     elif system == "Windows":
+        import ctypes, shutil
+        # Service install requires admin — give a clear error rather than a
+        # cryptic NSSM failure if the terminal isn't elevated.
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            print("error: installing a Windows service requires an elevated terminal.", file=sys.stderr)
+            print("       Re-run this command in an Administrator PowerShell.", file=sys.stderr)
+            sys.exit(1)
+
         binary = _task_tracker_bin()
-        import subprocess
+        DATA.mkdir(parents=True, exist_ok=True)
+
+        # Locate NSSM: prefer PATH, then the known install location.
+        nssm = shutil.which("nssm") or r"C:\nssm-2.24\win64\nssm.exe"
+        if not Path(nssm).exists():
+            print(f"error: nssm not found. Install from https://nssm.cc and add to PATH.", file=sys.stderr)
+            sys.exit(1)
+
         svc = "TaskTracker"
-        subprocess.run(["nssm", "install", svc, str(binary)], check=True)
-        subprocess.run(["nssm", "set", svc, "Start", "SERVICE_AUTO_START"], check=True)
-        subprocess.run(["nssm", "set", svc, "AppStdout",
-                        str(DATA / "service.out.log")], check=True)
-        subprocess.run(["nssm", "set", svc, "AppStderr",
-                        str(DATA / "service.err.log")], check=True)
-        subprocess.run(["nssm", "start", svc], check=True)
-        print(f"Service '{svc}' installed and started.")
+        # If a stale service entry exists from a previous install, remove it cleanly
+        # before re-installing so NSSM doesn't fail with "service already exists".
+        subprocess.run([nssm, "stop",   svc], capture_output=True)
+        subprocess.run([nssm, "remove", svc, "confirm"], capture_output=True)
+
+        subprocess.run([nssm, "install",   svc, str(binary)],                         check=True)
+        subprocess.run([nssm, "set",       svc, "Start",     "SERVICE_AUTO_START"],    check=True)
+        subprocess.run([nssm, "set",       svc, "AppStdout", str(DATA / "service.out.log")], check=True)
+        subprocess.run([nssm, "set",       svc, "AppStderr", str(DATA / "service.err.log")], check=True)
+        # Pin APPDATA to the installing user's directory so the service writes
+        # config.json and sessions.jsonl to the same place regardless of which
+        # Windows account NSSM uses to run the service (default: LocalSystem).
+        user_appdata = os.environ.get("APPDATA", "")
+        if user_appdata:
+            subprocess.run([nssm, "set", svc, "AppEnvironmentExtra",
+                            f"APPDATA={user_appdata}"], check=True)
+        subprocess.run([nssm, "start",     svc],                                       check=True)
+
+        print(f"  Service installed : '{svc}' (auto-start on login)")
+        print(f"  Binary            : {binary}")
+
+        # Give the service a moment to start and write config.json
+        _time.sleep(2)
+        cfg_path = DATA / "config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            print(f"\n  API key : {cfg['api_key']}")
+            print(f"  Port    : {cfg.get('port', 5123)}")
+        print(f"\n  Logs    : {DATA / 'service.out.log'}")
     else:
         print(f"error: unsupported platform '{system}'.", file=sys.stderr)
         sys.exit(1)
@@ -416,9 +503,14 @@ def cmd_uninstall_service():
         print("Service uninstalled.")
 
     elif system == "Windows":
-        import subprocess
-        subprocess.run(["nssm", "stop",   "TaskTracker"], capture_output=True)
-        subprocess.run(["nssm", "remove", "TaskTracker", "confirm"], check=True)
+        import ctypes, shutil
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            print("error: removing a Windows service requires an elevated terminal.", file=sys.stderr)
+            print("       Re-run this command in an Administrator PowerShell.", file=sys.stderr)
+            sys.exit(1)
+        nssm = shutil.which("nssm") or r"C:\nssm-2.24\win64\nssm.exe"
+        subprocess.run([nssm, "stop",   "TaskTracker"], capture_output=True)
+        subprocess.run([nssm, "remove", "TaskTracker", "confirm"], check=True)
         print("Service uninstalled.")
     else:
         print(f"error: unsupported platform '{system}'.", file=sys.stderr)
@@ -467,6 +559,8 @@ def cmd_service_status():
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap  = argparse.ArgumentParser(prog="pm", description="Project Manager CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -474,6 +568,11 @@ def main():
     a.add_argument("name", help="Project title")
     a.add_argument("--dir", help="Base directory (defaults to CWD)")
     a.add_argument("--inc", action="store_true", help="Append auto-incremented _NNN suffix")
+    quick = a.add_mutually_exclusive_group()
+    quick.add_argument("--tactical", action="store_true",
+                       help="Quick init: TLC Tactical (tlc/tvc/Public///, no prompts)")
+    quick.add_argument("--ds", action="store_true",
+                       help="Quick init: Digital Signage (tlc/digital-signage/Public, no prompts)")
 
     sub.add_parser("list",   help="List registered projects")
     sub.add_parser("rollup", help="Total time per project from sessions.jsonl")
@@ -493,8 +592,9 @@ def main():
     args = ap.parse_args()
 
     if args.cmd == "init":
-        base = Path(args.dir) if args.dir else Path.cwd()
-        cmd_init(args.name, base, args.inc)
+        base   = Path(args.dir) if args.dir else Path.cwd()
+        preset = "tactical" if args.tactical else ("ds" if args.ds else None)
+        cmd_init(args.name, base, args.inc, preset=preset)
     elif args.cmd == "list":
         cmd_list()
     elif args.cmd == "register":
