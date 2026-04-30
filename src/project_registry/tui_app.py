@@ -271,9 +271,9 @@ class ProjectDetailScreen(Screen):
 
     def _refresh_data(self) -> None:
         self._data = _detail_data(self._project)
-        self._render()
+        self._build()
 
-    def _render(self) -> None:
+    def _build(self) -> None:
         d    = self._data
         body = self.query_one("#detail-body", Vertical)
         body.remove_children()
