@@ -349,41 +349,31 @@ def _load_project_yaml(path: Path) -> dict:
         return {}
 
 
+def _project_bin() -> str:
+    """Resolve the project executable in the same venv as this process."""
+    name = "project.exe" if sys.platform == "win32" else "project"
+    return str(Path(sys.executable).parent / name)
+
+
 def cmd_rollup(as_json: bool = False):
-    """Total time per project — reads project.yaml (all entries) + sessions.jsonl (unsynced)."""
+    """Sync all registered projects then total time from project.yaml time_entries."""
+    import subprocess
     registry = load_registry()
     names    = {r["id"]: r.get("name", r["id"]) for r in registry}
+    project  = _project_bin()
 
-    # session_id -> (project_id, duration_sec)  — deduplicates across both sources
-    seen: dict[str, tuple[str, int]] = {}
-
-    # Source 1: project.yaml time_entries for all registered projects (includes manual M- entries)
+    totals: dict[str, int] = {}
     for entry in registry:
         pid       = entry["id"]
         yaml_path = Path(entry.get("path", "")) / "project.yaml"
         if not yaml_path.exists():
             continue
+        # Sync sessions.jsonl into project.yaml first (idempotent, silent)
+        subprocess.run([project, "sync-time", "--file", str(yaml_path)], capture_output=True)
         record = _load_project_yaml(yaml_path)
-        for te in record.get("time_entries", []):
-            sid = te.get("session_id")
-            if sid and sid not in seen:
-                seen[sid] = (pid, int(te.get("duration_sec", 0)))
-
-    # Source 2: sessions.jsonl — catches any service sessions not yet synced to project.yaml
-    if SESS.exists():
-        with SESS.open("r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    j   = json.loads(line)
-                    sid = j.get("session_id")
-                    if sid and sid not in seen:
-                        seen[sid] = (j["project_id"], int(j.get("duration_sec", 0)))
-                except Exception:
-                    pass
-
-    totals: dict[str, int] = {}
-    for pid, sec in seen.values():
-        totals[pid] = totals.get(pid, 0) + sec
+        sec    = sum(int(te.get("duration_sec", 0)) for te in record.get("time_entries", []))
+        if sec:
+            totals[pid] = sec
 
     if not totals:
         print("No time recorded yet.")
@@ -403,10 +393,8 @@ def cmd_rollup(as_json: bool = False):
     print(f"  {'Project':<{name_w}}  Time")
     print("  " + "-" * (name_w + 8))
     for pid, sec in rows:
-        name = names.get(pid, pid)
-        print(f"  {name:<{name_w}}  {_fmt_h(sec)}")
-    total_sec = sum(totals.values())
-    print(f"\n  Total: {_fmt_h(total_sec)}")
+        print(f"  {names.get(pid, pid):<{name_w}}  {_fmt_h(sec)}")
+    print(f"\n  Total: {_fmt_h(sum(totals.values()))}")
 
 
 def cmd_status(as_json: bool = False):
