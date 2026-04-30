@@ -233,7 +233,7 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None 
         proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
         category  = ask_choice(
             "Category",
-            ["tvc", "reel", "brand", "social", "personal", "digital-signage", "other"],
+            ["tvc", "digital-signage", "b2b", "digital"],
             "tvc",
         )
 
@@ -328,25 +328,170 @@ def cmd_scan(directory: Path):
     print(f"\n{found} project(s) registered from {directory}")
 
 
-def cmd_rollup():
-    """Total time per project from sessions.jsonl."""
+def _fmt_h(seconds: int) -> str:
+    return f"{seconds / 3600:.1f}h"
+
+
+def _days_ago(iso_str: str) -> str:
+    try:
+        dt   = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        days = (datetime.now(timezone.utc) - dt).days
+        return "today" if days == 0 else f"{days}d ago"
+    except Exception:
+        return "?"
+
+
+def _load_project_yaml(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def cmd_rollup(as_json: bool = False):
+    """Total time per project — reads project.yaml (all entries) + sessions.jsonl (unsynced)."""
+    registry = load_registry()
+    names    = {r["id"]: r.get("name", r["id"]) for r in registry}
+
+    # session_id -> (project_id, duration_sec)  — deduplicates across both sources
+    seen: dict[str, tuple[str, int]] = {}
+
+    # Source 1: project.yaml time_entries for all registered projects (includes manual M- entries)
+    for entry in registry:
+        pid       = entry["id"]
+        yaml_path = Path(entry.get("path", "")) / "project.yaml"
+        if not yaml_path.exists():
+            continue
+        record = _load_project_yaml(yaml_path)
+        for te in record.get("time_entries", []):
+            sid = te.get("session_id")
+            if sid and sid not in seen:
+                seen[sid] = (pid, int(te.get("duration_sec", 0)))
+
+    # Source 2: sessions.jsonl — catches any service sessions not yet synced to project.yaml
+    if SESS.exists():
+        with SESS.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    j   = json.loads(line)
+                    sid = j.get("session_id")
+                    if sid and sid not in seen:
+                        seen[sid] = (j["project_id"], int(j.get("duration_sec", 0)))
+                except Exception:
+                    pass
+
     totals: dict[str, int] = {}
-    if not SESS.exists():
-        print("No sessions log found.")
-        return
-    with SESS.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                j   = json.loads(line)
-                pid = j["project_id"]
-                totals[pid] = totals.get(pid, 0) + int(j.get("duration_sec", 0))
-            except Exception:
-                pass
+    for pid, sec in seen.values():
+        totals[pid] = totals.get(pid, 0) + sec
+
     if not totals:
-        print("No sessions recorded yet.")
+        print("No time recorded yet.")
         return
-    for k, v in sorted(totals.items()):
-        print(f"{k}: {v / 3600:.2f}h")
+
+    rows = sorted(totals.items(), key=lambda x: -x[1])
+
+    if as_json:
+        print(json.dumps([
+            {"id": pid, "name": names.get(pid, pid), "hours": round(sec / 3600, 2)}
+            for pid, sec in rows
+        ]))
+        return
+
+    name_w = max(len("Project"), max(len(names.get(pid, pid)) for pid, _ in rows))
+    print()
+    print(f"  {'Project':<{name_w}}  Time")
+    print("  " + "-" * (name_w + 8))
+    for pid, sec in rows:
+        name = names.get(pid, pid)
+        print(f"  {name:<{name_w}}  {_fmt_h(sec)}")
+    total_sec = sum(totals.values())
+    print(f"\n  Total: {_fmt_h(total_sec)}")
+
+
+def cmd_status(as_json: bool = False):
+    """Summary table of all registered projects."""
+    registry = load_registry()
+    if not registry:
+        print("No projects registered. Run `pm init` or `pm register` to add one.")
+        return
+
+    rows = []
+    for entry in registry:
+        pid  = entry["id"]
+        name = entry.get("name", pid)
+        path = Path(entry.get("path", ""))
+        yaml_path = path / "project.yaml"
+
+        phase        = "missing"
+        total_sec    = 0
+        deadline     = None
+        last_delivery = None
+
+        if yaml_path.exists():
+            record = _load_project_yaml(yaml_path)
+            phase_log = record.get("phase_log") or []
+            phase     = phase_log[-1].get("phase", "?") if phase_log else "?"
+            total_sec = sum(int(te.get("duration_sec", 0))
+                            for te in record.get("time_entries", []))
+            deadline  = record.get("deadline")
+            delivs    = record.get("deliverables") or []
+            if delivs:
+                d = delivs[-1]
+                last_delivery = {
+                    "name":         d.get("name", "?"),
+                    "type":         d.get("type", "?"),
+                    "delivered_at": d.get("delivered_at", ""),
+                }
+
+        rows.append({
+            "id":            pid,
+            "name":          name,
+            "phase":         phase,
+            "total_sec":     total_sec,
+            "deadline":      str(deadline) if deadline else "—",
+            "last_delivery": last_delivery,
+            "path":          str(path),
+        })
+
+    if as_json:
+        print(json.dumps([
+            {
+                "id":            r["id"],
+                "name":          r["name"],
+                "phase":         r["phase"],
+                "total_hours":   round(r["total_sec"] / 3600, 2),
+                "deadline":      None if r["deadline"] == "—" else r["deadline"],
+                "last_delivery": r["last_delivery"],
+                "path":          r["path"],
+            }
+            for r in rows
+        ], indent=2, ensure_ascii=False))
+        return
+
+    name_w  = max(len("Name"),  max(len(r["name"])  for r in rows))
+    phase_w = max(len("Phase"), max(len(r["phase"]) for r in rows))
+
+    print(f"\n  {len(rows)} project(s)\n")
+    header = f"  {'Name':<{name_w}}  {'Phase':<{phase_w}}  {'Time':>6}  {'Deadline':<12}  Last delivery"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    for r in rows:
+        time_str = _fmt_h(r["total_sec"]) if r["total_sec"] > 0 else "—"
+        if r["last_delivery"]:
+            d  = r["last_delivery"]
+            rel = _days_ago(d["delivered_at"]) if d["delivered_at"] else "?"
+            delivery_str = f"{d['name']} ({rel})"
+        else:
+            delivery_str = "—"
+        print(
+            f"  {r['name']:<{name_w}}  {r['phase']:<{phase_w}}  "
+            f"{time_str:>6}  {r['deadline']:<12}  {delivery_str}"
+        )
+
+    total_all = sum(r["total_sec"] for r in rows)
+    print(f"\n  Total logged: {_fmt_h(total_all)}\n")
 
 
 def cmd_remove(project_id: str) -> int:
@@ -575,7 +720,10 @@ def main():
                        help="Quick init: Digital Signage (tlc/digital-signage/Public, no prompts)")
 
     sub.add_parser("list",   help="List registered projects")
-    sub.add_parser("rollup", help="Total time per project from sessions.jsonl")
+    sub.add_parser("status", help="Summary table of all registered projects").add_argument(
+        "--json", action="store_true", help="Output as JSON")
+    p_rollup = sub.add_parser("rollup", help="Total time per project (all sources)")
+    p_rollup.add_argument("--json", action="store_true", help="Output as JSON")
     sub.add_parser("install-service",   help="Install and start the task-tracker background service")
     sub.add_parser("uninstall-service", help="Stop and remove the task-tracker service")
     sub.add_parser("service-status",    help="Show service state and current open session")
@@ -597,12 +745,14 @@ def main():
         cmd_init(args.name, base, args.inc, preset=preset)
     elif args.cmd == "list":
         cmd_list()
+    elif args.cmd == "status":
+        cmd_status(as_json=args.json)
     elif args.cmd == "register":
         cmd_register(Path(args.path))
     elif args.cmd == "scan":
         cmd_scan(Path(args.directory))
     elif args.cmd == "rollup":
-        cmd_rollup()
+        cmd_rollup(as_json=args.json)
     elif args.cmd == "remove":
         sys.exit(cmd_remove(args.project_id))
     elif args.cmd == "install-service":

@@ -25,7 +25,7 @@ from project_registry.config import SESSIONS_LOG, DATA_DIR
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 VALID_TYPES      = {"personal", "tlc", "client"}
-VALID_CATEGORIES = {"tvc", "reel", "brand", "social", "personal", "digital-signage", "other"}
+VALID_CATEGORIES = {"tvc", "digital-signage", "b2b", "digital"}
 VALID_PHASES     = ["concept", "production", "delivery", "archive"]
 PHASE_ORDER      = {p: i for i, p in enumerate(VALID_PHASES)}
 
