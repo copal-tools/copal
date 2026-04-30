@@ -8,6 +8,7 @@ Screens:
 
 import json
 import urllib.request
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,10 +16,17 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical, Horizontal
 from textual.screen import ModalScreen, Screen
-from textual.widgets import DataTable, Footer, Header, Input, Label, Rule, Static
+from textual.widgets import (
+    Button, DataTable, Footer, Header, Input, Label,
+    RadioButton, RadioSet, Rule, Select, Static,
+)
 
 from project_registry.config import DATA_DIR
-from project_registry.pm import days_ago, fmt_h, load_project_yaml, load_registry
+from project_registry.pm import (
+    _YAML_HEADER, build_project_record, compute_id_and_path,
+    days_ago, fmt_h, load_project_yaml, load_registry,
+    QUICK_PRESETS, upsert_registry,
+)
 
 
 # ── Service helpers ────────────────────────────────────────────────────────────
@@ -186,6 +194,164 @@ class TimerStartModal(ModalScreen):
             event.stop()
 
 
+class InitScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    InitScreen {
+        align: center middle;
+    }
+    #init-box {
+        width: 62;
+        height: auto;
+        max-height: 90vh;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #init-box .field-label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    #init-buttons {
+        margin-top: 1;
+        height: auto;
+    }
+    #init-buttons Button {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._preset_index = 0  # 0=Custom, 1=Tactical, 2=DS
+
+    def compose(self) -> ComposeResult:
+        with ScrollableContainer():
+            with Vertical(id="init-box"):
+                yield Label("[bold]New Project[/bold]")
+                yield Rule()
+                yield Label("Name *", classes="field-label")
+                yield Input(placeholder="Project name", id="name-input")
+                yield Label("Preset", classes="field-label")
+                yield RadioSet(
+                    RadioButton("Custom"),
+                    RadioButton("Tactical"),
+                    RadioButton("Digital Signage"),
+                    id="preset-radio",
+                )
+                with Vertical(id="custom-fields"):
+                    yield Label("Type", classes="field-label")
+                    yield Select(
+                        [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
+                        value="tlc", allow_blank=False, id="type-select",
+                    )
+                    yield Label("Category", classes="field-label")
+                    yield Select(
+                        [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
+                         ("B2B", "b2b"), ("Digital", "digital")],
+                        value="tvc", allow_blank=False, id="category-select",
+                    )
+                    yield Label("Client", classes="field-label")
+                    yield Input(placeholder="Client name (optional)", id="client-input")
+                    yield Label("Director", classes="field-label")
+                    yield Input(placeholder="e.g.  (optional)", id="director-input")
+                    yield Label("Producer", classes="field-label")
+                    yield Input(placeholder="e.g.  (optional)", id="producer-input")
+                    yield Label("Deadline", classes="field-label")
+                    yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input")
+                yield Label("Project folder", classes="field-label")
+                yield Input(id="dir-input")
+                with Horizontal(id="init-buttons"):
+                    yield Button("Create", variant="primary", id="btn-create")
+                    yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#dir-input", Input).value = self._default_dir()
+        self.query_one("#name-input", Input).focus()
+
+    @staticmethod
+    def _default_dir() -> str:
+        try:
+            cfg = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
+            if cfg.get("projects_dir"):
+                return cfg["projects_dir"]
+        except Exception:
+            pass
+        return str(Path.home() / "Projects")
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        self._preset_index = event.index
+        self.query_one("#custom-fields").display = (event.index == 0)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self.app.pop_screen()
+        elif event.button.id == "btn-create":
+            self._do_create()
+
+    def _do_create(self) -> None:
+        name = self.query_one("#name-input", Input).value.strip()
+        if not name:
+            self.notify("Project name is required.", severity="error")
+            self.query_one("#name-input", Input).focus()
+            return
+
+        base_dir = Path(self.query_one("#dir-input", Input).value.strip() or self._default_dir())
+
+        idx = self._preset_index
+        if idx == 1:
+            p             = QUICK_PRESETS["tactical"]
+            proj_type     = p["type"];    category      = p["category"]
+            client        = p["client"];  director      = p["director"]
+            producer      = p["producer"]; collaborators = p["collaborators"]
+            deadline      = None
+        elif idx == 2:
+            p             = QUICK_PRESETS["ds"]
+            proj_type     = p["type"];    category      = p["category"]
+            client        = p["client"];  director      = p["director"]
+            producer      = p["producer"]; collaborators = p["collaborators"]
+            deadline      = None
+        else:
+            proj_type     = self.query_one("#type-select",     Select).value
+            category      = self.query_one("#category-select", Select).value
+            client        = self.query_one("#client-input",    Input).value.strip() or None
+            director      = self.query_one("#director-input",  Input).value.strip() or None
+            producer      = self.query_one("#producer-input",  Input).value.strip() or None
+            deadline      = self.query_one("#deadline-input",  Input).value.strip() or None
+            collaborators = None
+
+        try:
+            pid, root = compute_id_and_path(name, base_dir, use_increment=True)
+            root.mkdir(parents=True, exist_ok=True)
+            for d in ["01_Intake", "02_Workfiles", "03_Exports"]:
+                (root / d).mkdir(exist_ok=True)
+
+            record    = build_project_record(
+                pid, name, proj_type, category,
+                client, None, director, producer,
+                deadline, None, None, None,
+                collaborators=collaborators,
+            )
+            yaml_path = root / "project.yaml"
+            yaml_path.write_text(
+                _YAML_HEADER + yaml.dump(
+                    record, default_flow_style=False, allow_unicode=True, sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            upsert_registry(pid, name, root)
+
+            project_info = {"id": pid, "name": name, "path": str(root)}
+            self.app.pop_screen()
+            self.app.push_screen(ProjectDetailScreen(project_info))
+
+        except Exception as e:
+            self.notify(str(e), title="Create failed", severity="error")
+
+
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_project", "New project"),
@@ -245,7 +411,7 @@ class DashboardScreen(Screen):
             self.app.push_screen(ProjectDetailScreen(project))
 
     def action_new_project(self) -> None:
-        self.notify("Init screen coming in next build.", title="Not yet")
+        self.app.push_screen(InitScreen())
 
 
 class ProjectDetailScreen(Screen):
