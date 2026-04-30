@@ -252,7 +252,7 @@ class DashboardScreen(Screen):
 class ProjectDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
-        Binding("t",      "toggle_timer",   "Start/stop timer"),
+        Binding("t",      "toggle_timer",   "Start/stop timer", priority=True),
         Binding("r",      "refresh",        "Refresh"),
     ]
 
@@ -364,12 +364,12 @@ class ProjectDetailScreen(Screen):
     def action_refresh(self) -> None:
         self._refresh_data()
 
-    async def action_toggle_timer(self) -> None:
+    def action_toggle_timer(self) -> None:
         session = _active_session()
         pid     = self._data.get("id")
 
         if session and session.get("project_id") == pid:
-            # Timer is running on this project — stop it
+            # Timer running on this project — stop immediately, no modal needed
             try:
                 resp = _service_call("POST", "/stop", {"reason": "manual"})
                 if resp.get("stopped"):
@@ -379,23 +379,25 @@ class ProjectDetailScreen(Screen):
                     )
             except Exception as e:
                 self.notify(str(e), title="Error", severity="error")
+            self._refresh_data()
         else:
-            # No timer (or timer on different project) — ask for description, then start
-            description = await self.app.push_screen_wait(TimerStartModal())
-            if description is None:
-                return  # user cancelled
-            try:
-                _service_call("POST", "/start", {
-                    "projectId":   pid,
-                    "description": description or None,
-                    "phase":       self._data.get("phase"),
-                })
-                label = f" — {description}" if description else ""
-                self.notify(f"{self._data.get('name','')}{label}", title="● Started")
-            except Exception as e:
-                self.notify(str(e), title="Error", severity="error")
+            # Show description modal; start timer in the dismiss callback
+            def on_description(description: str | None) -> None:
+                if description is None:
+                    return  # user cancelled with Esc
+                try:
+                    _service_call("POST", "/start", {
+                        "projectId":   pid,
+                        "description": description or None,
+                        "phase":       self._data.get("phase"),
+                    })
+                    label = f" — {description}" if description else ""
+                    self.notify(f"{self._data.get('name','')}{label}", title="● Started")
+                except Exception as e:
+                    self.notify(str(e), title="Error", severity="error")
+                self._refresh_data()
 
-        self._refresh_data()
+            self.app.push_screen(TimerStartModal(), on_description)
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
