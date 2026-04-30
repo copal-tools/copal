@@ -188,10 +188,9 @@ class TimerStartModal(ModalScreen):
 
 class DashboardScreen(Screen):
     BINDINGS = [
-        Binding("n",      "new_project",  "New project"),
-        Binding("r",      "refresh",      "Refresh"),
-        Binding("q",      "app.quit",     "Quit"),
-        Binding("enter",  "open_project", "Open", show=False),
+        Binding("n", "new_project", "New project"),
+        Binding("r", "refresh",     "Refresh"),
+        Binding("q", "app.quit",    "Quit"),
     ]
 
     _rows: list[dict] = []
@@ -239,14 +238,14 @@ class DashboardScreen(Screen):
     def action_refresh(self) -> None:
         self._refresh_data()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        pid     = event.row_key.value
+        project = next((r for r in self._rows if r["id"] == pid), None)
+        if project:
+            self.app.push_screen(ProjectDetailScreen(project))
+
     def action_new_project(self) -> None:
         self.notify("Init screen coming in next build.", title="Not yet")
-
-    def action_open_project(self) -> None:
-        table = self.query_one(DataTable)
-        row   = table.cursor_row
-        if row is not None and row < len(self._rows):
-            self.app.push_screen(ProjectDetailScreen(self._rows[row]))
 
 
 class ProjectDetailScreen(Screen):
