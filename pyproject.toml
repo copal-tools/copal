@@ -8,6 +8,7 @@ dependencies = [
     "flask>=3.1.2",
     "waitress>=3.0.2",
     "pyyaml>=6.0",
+    "textual>=0.59",
 ]
 
 [project.scripts]
@@ -16,6 +17,7 @@ task-tracker = "project_registry.task_tracker:main"
 project      = "project_registry.project_record:main"
 tt           = "project_registry.time_cli:main"
 deliver      = "project_registry.deliver_cli:main"
+pm-tui       = "project_registry.tui_app:main"
 
 [build-system]
 requires = ["hatchling"]

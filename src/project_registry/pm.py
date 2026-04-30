@@ -328,11 +328,11 @@ def cmd_scan(directory: Path):
     print(f"\n{found} project(s) registered from {directory}")
 
 
-def _fmt_h(seconds: int) -> str:
+def fmt_h(seconds: int) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def _days_ago(iso_str: str) -> str:
+def days_ago(iso_str: str) -> str:
     try:
         dt   = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         days = (datetime.now(timezone.utc) - dt).days
@@ -341,7 +341,7 @@ def _days_ago(iso_str: str) -> str:
         return "?"
 
 
-def _load_project_yaml(path: Path) -> dict:
+def load_project_yaml(path: Path) -> dict:
     try:
         with path.open("r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -370,7 +370,7 @@ def cmd_rollup(as_json: bool = False):
             continue
         # Sync sessions.jsonl into project.yaml first (idempotent, silent)
         subprocess.run([project, "sync-time", "--file", str(yaml_path)], capture_output=True)
-        record = _load_project_yaml(yaml_path)
+        record = load_project_yaml(yaml_path)
         sec    = sum(int(te.get("duration_sec", 0)) for te in record.get("time_entries", []))
         if sec:
             totals[pid] = sec
@@ -393,8 +393,8 @@ def cmd_rollup(as_json: bool = False):
     print(f"  {'Project':<{name_w}}  Time")
     print("  " + "-" * (name_w + 8))
     for pid, sec in rows:
-        print(f"  {names.get(pid, pid):<{name_w}}  {_fmt_h(sec)}")
-    print(f"\n  Total: {_fmt_h(sum(totals.values()))}")
+        print(f"  {names.get(pid, pid):<{name_w}}  {fmt_h(sec)}")
+    print(f"\n  Total: {fmt_h(sum(totals.values()))}")
 
 
 def cmd_status(as_json: bool = False):
@@ -417,7 +417,7 @@ def cmd_status(as_json: bool = False):
         last_delivery = None
 
         if yaml_path.exists():
-            record = _load_project_yaml(yaml_path)
+            record = load_project_yaml(yaml_path)
             phase_log = record.get("phase_log") or []
             phase     = phase_log[-1].get("phase", "?") if phase_log else "?"
             total_sec = sum(int(te.get("duration_sec", 0))
@@ -466,10 +466,10 @@ def cmd_status(as_json: bool = False):
     print("  " + "-" * (len(header) - 2))
 
     for r in rows:
-        time_str = _fmt_h(r["total_sec"]) if r["total_sec"] > 0 else "—"
+        time_str = fmt_h(r["total_sec"]) if r["total_sec"] > 0 else "—"
         if r["last_delivery"]:
             d  = r["last_delivery"]
-            rel = _days_ago(d["delivered_at"]) if d["delivered_at"] else "?"
+            rel = days_ago(d["delivered_at"]) if d["delivered_at"] else "?"
             delivery_str = f"{d['name']} ({rel})"
         else:
             delivery_str = "—"
@@ -479,7 +479,7 @@ def cmd_status(as_json: bool = False):
         )
 
     total_all = sum(r["total_sec"] for r in rows)
-    print(f"\n  Total logged: {_fmt_h(total_all)}\n")
+    print(f"\n  Total logged: {fmt_h(total_all)}\n")
 
 
 def cmd_remove(project_id: str) -> int:
