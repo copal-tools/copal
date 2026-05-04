@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from database import get_db
 
 # Logging — level controlled via LOG_LEVEL env var (default INFO).
@@ -168,17 +169,24 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     else:
         project_id = project[0]
 
-    commit_result = db.execute(text("""
-        INSERT INTO commits (project_id, version_tag, message, author_name)
-        VALUES (:pid, :tag, :msg, :auth)
-        RETURNING id
-    """), {
-        "pid": project_id,
-        "tag": request.version_tag,
-        "msg": request.message,
-        "auth": request.author
-    })
-    commit_id = commit_result.fetchone()[0]
+    try:
+        commit_result = db.execute(text("""
+            INSERT INTO commits (project_id, version_tag, message, author_name)
+            VALUES (:pid, :tag, :msg, :auth)
+            RETURNING id
+        """), {
+            "pid": project_id,
+            "tag": request.version_tag,
+            "msg": request.message,
+            "auth": request.author
+        })
+        commit_id = commit_result.fetchone()[0]
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Version '{request.version_tag}' already exists for project '{request.project_id}'."
+        )
 
     file_map = {f.path: f.hash for f in request.files}
     unique_hashes = tuple(set(file_map.values()))
