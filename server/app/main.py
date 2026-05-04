@@ -153,6 +153,7 @@ def confirm_upload(request: ConfirmUploadRequest, db: Session = Depends(get_db))
 def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     logger.info("Creating commit '%s' for project '%s'", request.version_tag, request.project_id)
 
+    # --- STEP 1: Resolve project (auto-create kept for now, removed in Phase 6) ---
     project = db.execute(
         text("SELECT id FROM projects WHERE name = :name"),
         {"name": request.project_id}
@@ -169,7 +170,35 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     else:
         project_id = project[0]
 
+    # --- STEP 2: Validate ALL hashes resolve BEFORE writing anything ---
+    # If any upload silently failed, we catch it here and abort cleanly.
+    file_map = {f.path: f.hash for f in request.files}
+    unique_hashes = tuple(set(file_map.values()))
+
+    if unique_hashes:
+        asset_rows = db.execute(
+            text("SELECT file_hash, id FROM assets WHERE file_hash IN :hashes"),
+            {"hashes": unique_hashes}
+        ).fetchall()
+        hash_to_uuid = {row[0]: row[1] for row in asset_rows}
+
+        missing = [h[:8] for h in unique_hashes if h not in hash_to_uuid]
+        if missing:
+            logger.warning(
+                "Commit '%s' aborted — %d file(s) not in asset store: %s",
+                request.version_tag, len(missing), missing
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"{len(missing)} file(s) were not found in the asset store. "
+                       f"One or more uploads may have failed. Re-run the push to retry."
+            )
+    else:
+        hash_to_uuid = {}
+
+    # --- STEP 3: Write everything in a single atomic transaction ---
     try:
+        # Insert commit row
         commit_result = db.execute(text("""
             INSERT INTO commits (project_id, version_tag, message, author_name)
             VALUES (:pid, :tag, :msg, :auth)
@@ -181,43 +210,38 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
             "auth": request.author
         })
         commit_id = commit_result.fetchone()[0]
+
+        # Bulk insert file links (all hashes already validated above)
+        links_to_create = [
+            {"cid": commit_id, "aid": hash_to_uuid[f.hash], "path": f.path}
+            for f in request.files
+            if f.hash in hash_to_uuid
+        ]
+
+        if links_to_create:
+            db.execute(text("""
+                INSERT INTO project_files (commit_id, asset_id, file_path)
+                VALUES (:cid, :aid, :path)
+            """), links_to_create)
+
+        # Single commit — all or nothing
+        db.commit()
+        logger.info("Commit '%s' created with %d files.", request.version_tag, len(links_to_create))
+        return {"commit_id": str(commit_id), "status": "success"}
+
     except IntegrityError:
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail=f"Version '{request.version_tag}' already exists for project '{request.project_id}'."
         )
-
-    file_map = {f.path: f.hash for f in request.files}
-    unique_hashes = tuple(set(file_map.values()))
-
-    if not unique_hashes:
-        db.commit()
-        return {"status": "ok", "message": "Empty commit created."}
-
-    asset_query = text("SELECT file_hash, id FROM assets WHERE file_hash IN :hashes")
-    asset_rows = db.execute(asset_query, {"hashes": unique_hashes}).fetchall()
-    hash_to_uuid = {row[0]: row[1] for row in asset_rows}
-
-    links_to_create = []
-    for f in request.files:
-        if f.hash in hash_to_uuid:
-            links_to_create.append({
-                "cid": commit_id,
-                "aid": hash_to_uuid[f.hash],
-                "path": f.path
-            })
-
-    if links_to_create:
-        db.execute(text("""
-            INSERT INTO project_files (commit_id, asset_id, file_path)
-            VALUES (:cid, :aid, :path)
-        """), links_to_create)
-
-    db.commit()
-    logger.info("Commit %s created with %d files.", request.version_tag, len(links_to_create))
-
-    return {"commit_id": str(commit_id), "status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("Commit '%s' failed unexpectedly: %s", request.version_tag, e)
+        raise HTTPException(status_code=500, detail="Commit failed. All changes rolled back.")
 
 
 @app.get("/checkout/{project_name}/{version_tag}")
