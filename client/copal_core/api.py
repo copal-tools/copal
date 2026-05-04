@@ -1,5 +1,8 @@
 import requests
+from requests.exceptions import ConnectionError, Timeout
 from .config import ENDPOINTS, API_BASE
+
+API_TIMEOUT = (10, 30)
 
 def handshake(project_name, local_assets):
     """Asks server which files are missing."""
@@ -7,11 +10,11 @@ def handshake(project_name, local_assets):
         "client_id": "tui-client",
         "project_id": project_name,
         "client_manifest": [
-            {"path": f["path"], "hash": f["hash"], "size": f["size"]} 
+            {"path": f["path"], "hash": f["hash"], "size": f["size"]}
             for f in local_assets
         ]
     }
-    resp = requests.post(ENDPOINTS["handshake"], json=payload)
+    resp = requests.post(ENDPOINTS["handshake"], json=payload, timeout=API_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -23,7 +26,8 @@ def confirm_upload(file_hash, size, fid):
         "seaweed_fid": fid,
         "mime_type": "application/octet-stream"
     }
-    requests.post(ENDPOINTS["confirm"], json=payload)
+    resp = requests.post(ENDPOINTS["confirm"], json=payload, timeout=API_TIMEOUT)
+    resp.raise_for_status()
 
 def commit(project, tag, message, author, files):
     """Finalizes the version."""
@@ -34,27 +38,28 @@ def commit(project, tag, message, author, files):
         "author": author,
         "files": [{"path": f["path"], "hash": f["hash"], "size": f["size"]} for f in files]
     }
-    requests.post(ENDPOINTS["commit"], json=payload).raise_for_status()
+    resp = requests.post(ENDPOINTS["commit"], json=payload, timeout=API_TIMEOUT)
+    resp.raise_for_status()
 
 def get_manifest(project, tag):
     """Fetches file list for a specific version."""
     url = f"{ENDPOINTS['checkout']}/{project}/{tag}"
-    resp = requests.get(url)
+    resp = requests.get(url, timeout=API_TIMEOUT)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
     return resp.json()
 
-# --- NEW FUNCTION ---
 def get_versions(project_name):
-    """Fetches list of versions from server (Newest First)."""
-    # Matches the endpoint we added to main.py
+    """Fetches list of versions from server (Newest First).
+    Returns empty list for genuine 404. Raises on connection/server errors.
+    """
     url = f"{API_BASE}/projects/{project_name}/versions"
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, timeout=API_TIMEOUT)
         if resp.status_code == 404:
-            return [] 
+            return []
         resp.raise_for_status()
-        return resp.json() # Returns list like ['v1.2', 'v1.1']
-    except Exception:
-        return []
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}. Is it running?") from e

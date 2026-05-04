@@ -2,6 +2,7 @@ import os
 import hashlib
 import fnmatch
 import json
+import subprocess
 
 def calculate_hash(filepath):
     """Calculates SHA256 hash of a local file."""
@@ -128,6 +129,6 @@ def save_local_state(root_dir, project_id, last_tag):
             json.dump(data, f, indent=4)
         # Hide the folder on Windows
         if os.name == 'nt':
-            os.system(f'attrib +h "{copal_dir}"')
+            subprocess.run(['attrib', '+h', str(copal_dir)], capture_output=True)
     except Exception as e:
         print(f"⚠️  Could not save local state: {e}")

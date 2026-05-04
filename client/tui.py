@@ -2,12 +2,16 @@ import os
 import sys
 import getpass
 import time
+import subprocess
 from copal_core import fs, api, transport, versioning, registry
-from copal_core.config import SETTINGS # <--- NEW IMPORT
+from copal_core.config import SETTINGS
 from copal_core.sync import SyncEngine
+# pm_hooks wires CopalVX push/pull events into the ProjectRegistry pm system.
+# All hooks are non-fatal — if pm tools are absent, CopalVX continues normally.
+from copal_core import pm_hooks
 
 def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    subprocess.run(['cls' if os.name == 'nt' else 'clear'], shell=True, capture_output=True)
 
 def print_header():
     clear_screen()
@@ -62,8 +66,13 @@ def do_push():
 
     # --- SMART VERSIONING ---
     print("☁️  Checking remote versions...")
-    existing_tags = api.get_versions(project)
-    
+    try:
+        existing_tags = api.get_versions(project)
+    except Exception as e:
+        print(f"❌ {e}")
+        input("Press Enter...")
+        return
+
     default_tag = "v1.0"
     if existing_tags:
         latest = existing_tags[0] 
@@ -97,6 +106,9 @@ def do_push():
 
     # --- 5. EXECUTE ---
     print(f"\n📂 Scanning: {root_dir}")
+    # Hook 1 (pre-push): flush any pending time sessions into project.yaml so
+    # time data is included in this push and available on other machines.
+    pm_hooks.hook_pre_push(root_dir)
     local_assets = fs.scan_directory(root_dir)
     
     if not local_assets:
@@ -151,6 +163,9 @@ def do_push():
         print(f"\n✅ SUCCESS! Project '{project}' version '{tag}' saved.")
         fs.save_local_state(root_dir, project, tag)
         registry.register_project(project, root_dir, tag)
+        # Hook 2 (post-push): stamp the copalvx block in project.yaml with the
+        # project name and version tag that was just successfully committed.
+        pm_hooks.hook_post_push(root_dir, project, tag)
         print("💾 Added to Recent Projects list.")
     except Exception as e:
         print(f"❌ Commit Failed: {e}")
@@ -167,8 +182,13 @@ def do_pull():
 
     # --- SMART SELECTION MENU ---
     print("☁️  Fetching history...")
-    versions = api.get_versions(project)
-    
+    try:
+        versions = api.get_versions(project)
+    except Exception as e:
+        print(f"❌ {e}")
+        input("Press Enter...")
+        return
+
     if not versions:
         print("❌ No versions found for this project.")
         input("Press Enter...")
@@ -291,7 +311,11 @@ def do_pull():
     # Save state so we remember this project
     fs.save_local_state(target_dir, project, tag)
     registry.register_project(project, target_dir, tag)
-    
+    # Hooks 3 & 4 (post-pull): register the project in the pm registry so
+    # `pm list` and `project` CWD detection work, then display the CopalVX
+    # block from the pulled project.yaml to confirm project identity.
+    pm_hooks.hook_post_pull(target_dir, project, tag)
+
     input("\nPress Enter to return to menu...")
 
 def main_menu():
