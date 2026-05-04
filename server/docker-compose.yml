@@ -24,7 +24,7 @@ services:
       -filer.port=8888
       -master.port=9333
       -ip.bind=0.0.0.0
-      -master.defaultReplication=001
+      -master.defaultReplication=000
       -master.volumeSizeLimitMB=4000
       -volume.inflightUploadDataTimeout=60m
       -idleTimeout=3600
