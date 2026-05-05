@@ -19,7 +19,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     description TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -42,8 +42,11 @@ CREATE TABLE IF NOT EXISTS commits (
     author_name TEXT NOT NULL,
     seconds_spent INTEGER DEFAULT 0,
     parent_commit_id UUID REFERENCES commits(id),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (project_id, version_tag)
 );
+CREATE INDEX IF NOT EXISTS idx_commits_project_version ON commits(project_id, version_tag);
+CREATE INDEX IF NOT EXISTS idx_commits_project_created ON commits(project_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS project_files (
     commit_id UUID REFERENCES commits(id) ON DELETE CASCADE,
