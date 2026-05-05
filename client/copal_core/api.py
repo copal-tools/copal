@@ -50,6 +50,14 @@ def get_manifest(project, tag):
     resp.raise_for_status()
     return resp.json()
 
+def ensure_project(name, description=""):
+    """Creates the project if it doesn't exist. 409 = already exists = success."""
+    payload = {"name": name, "description": description}
+    resp = requests.post(f"{API_BASE}/projects", json=payload, timeout=API_TIMEOUT)
+    if resp.status_code in (201, 409):
+        return
+    resp.raise_for_status()
+
 def get_versions(project_name):
     """Fetches list of versions from server (Newest First).
     Returns empty list for genuine 404. Raises on connection/server errors.

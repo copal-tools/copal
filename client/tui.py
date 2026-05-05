@@ -95,7 +95,16 @@ def do_push():
         print(f"❌ Error: {err_msg}")
         
     print(f"✅ Selected: {tag}")
-        
+
+    # --- 3.5. VERIFY/CREATE PROJECT ---
+    print("🔍 Verifying project on server...")
+    try:
+        api.ensure_project(project)
+    except Exception as e:
+        print(f"❌ Cannot confirm project: {e}")
+        input("Press Enter...")
+        return
+
     # --- 4. COMMIT MESSAGE ---
     default_msg = f"Update {tag}"
     msg = input(f"Commit Message [Default: {default_msg}]: ").strip()
@@ -327,15 +336,18 @@ def main_menu():
         print("2. Pull (Restore version)")
         print("3. Exit")
         print("----------------------------------------")
-        choice = input("Select Option: ").strip()
-        
-        if choice == "1":
+        choice = input("Select Option: ").strip().lower()
+
+        if choice in ("1", "push", "p"):
             do_push()
-        elif choice == "2":
+        elif choice in ("2", "pull"):
             do_pull()
-        elif choice == "3":
+        elif choice in ("3", "exit", "q", "quit"):
             print("Bye!")
             sys.exit()
+        else:
+            print(f"❌ '{choice}' is not a valid option. Type 1, 2, or 3.")
+            input("Press Enter to continue...")
 
 if __name__ == "__main__":
     try:

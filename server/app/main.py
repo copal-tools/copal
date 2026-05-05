@@ -80,8 +80,28 @@ class CommitRequest(BaseModel):
 class UploadRequest(BaseModel):
     files: List[str]
 
+class CreateProjectRequest(BaseModel):
+    name: str
+    description: str = ""
+
 
 # --- ENDPOINTS ---
+
+@app.post("/projects", status_code=201)
+def create_project(request: CreateProjectRequest, db: Session = Depends(get_db)):
+    logger.info("Creating project: %s", request.name)
+    try:
+        result = db.execute(
+            text("INSERT INTO projects (name, description) VALUES (:name, :desc) RETURNING id"),
+            {"name": request.name, "desc": request.description}
+        )
+        project_id = result.fetchone()[0]
+        db.commit()
+        return {"project_id": str(project_id), "name": request.name, "status": "created"}
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Project '{request.name}' already exists.")
+
 
 @app.post("/handshake", response_model=HandshakeResponse)
 def handshake(request: HandshakeRequest, db: Session = Depends(get_db)):
