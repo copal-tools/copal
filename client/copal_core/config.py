@@ -12,8 +12,10 @@ DEFAULT_CONFIG = {
     "api_port": 8005,
     "filer_port": 8888,
     "default_author": os.getenv("USERNAME", "artist"),
-    # If you usually keep projects in one place, set this in the json later!
-    "default_projects_root": "" 
+    "default_projects_root": "",
+    # Absolute path to the CopalVX client directory.
+    # pm-tui uses this to run `uv run copalvx push/pull` as a subprocess.
+    "client_path": str(Path(__file__).parent.parent.resolve()),
 }
 
 

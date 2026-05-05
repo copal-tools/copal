@@ -3,6 +3,7 @@ import sys
 import getpass
 import time
 import subprocess
+import argparse
 from copal_core import fs, api, transport, versioning, registry
 from copal_core.config import SETTINGS
 from copal_core.sync import SyncEngine
@@ -349,8 +350,135 @@ def main_menu():
             print(f"❌ '{choice}' is not a valid option. Type 1, 2, or 3.")
             input("Press Enter to continue...")
 
-if __name__ == "__main__":
+def push_cli(project, tag, path, message=None, author=None):
+    """Non-interactive push — all params provided, exits 0 on success, 1 on failure."""
+    if not os.path.exists(path):
+        print(f"Error: Path does not exist: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    author = author or SETTINGS.get("default_author", getpass.getuser())
+    message = message or f"Update {tag}"
+
+    print(f"[CopalVX] Push: {project} @ {tag}")
+
     try:
-        main_menu()
-    except KeyboardInterrupt:
-        print("\nExiting...")
+        api.ensure_project(project)
+    except Exception as e:
+        print(f"Error: Cannot confirm project: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    pm_hooks.hook_pre_push(path)
+
+    print(f"Scanning: {path}")
+    local_assets = fs.scan_directory(path)
+    if not local_assets:
+        print("Error: No files found.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Handshaking with server...")
+    try:
+        resp = api.handshake(project, local_assets)
+        needed = set(resp.get("required_files", []))
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if needed:
+        print(f"Uploading {len(needed)} new files...")
+        to_upload = [f for f in local_assets if f["path"] in needed]
+        engine = SyncEngine(max_threads=8)
+        successful_uploads = engine.execute_upload_plan(to_upload, progress_callback=None)
+        print(f"Uploaded {len(successful_uploads)}/{len(to_upload)}")
+
+        if len(successful_uploads) != len(to_upload):
+            print("Error: Some files failed to upload.", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            for item in successful_uploads:
+                api.confirm_upload(item["hash"], item["size"], item["fid"])
+        except Exception as e:
+            print(f"Error confirming uploads: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("All files already on server.")
+
+    print("Committing...")
+    try:
+        api.commit(project, tag, message, author, local_assets)
+        fs.save_local_state(path, project, tag)
+        registry.register_project(project, path, tag)
+        pm_hooks.hook_post_push(path, project, tag)
+        print(f"[CopalVX] Done: {project} @ {tag}")
+    except Exception as e:
+        print(f"Error: Commit failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def pull_cli(project, tag, target, policy="backup"):
+    """Non-interactive pull — all params provided, exits 0 on success, 1 on failure."""
+    print(f"[CopalVX] Pull: {project} @ {tag} -> {target}")
+
+    print("Fetching manifest...")
+    try:
+        manifest = api.get_manifest(project, tag)
+        if not manifest:
+            print(f"Error: Version '{tag}' not found for project '{project}'.", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    files = manifest.get("files", [])
+    print(f"Manifest: {len(files)} files. Analyzing...")
+
+    engine = SyncEngine(conflict_policy=policy, max_threads=8)
+    plan = engine.generate_plan(files, target)
+    results = engine.execute_plan(plan, progress_callback=None)
+
+    print(f"Done. Success: {results['success']} | Fail: {results['fail']} | Skipped: {results['skip']}")
+
+    if results["fail"] > 0:
+        print(f"Warning: {results['fail']} file(s) failed.", file=sys.stderr)
+
+    fs.save_local_state(target, project, tag)
+    registry.register_project(project, target, tag)
+    pm_hooks.hook_post_pull(target, project, tag)
+    print(f"[CopalVX] Done: {project} @ {tag}")
+
+    if results["fail"] > 0:
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="copalvx", add_help=False)
+    subparsers = parser.add_subparsers(dest="command")
+
+    push_p = subparsers.add_parser("push")
+    push_p.add_argument("project")
+    push_p.add_argument("tag")
+    push_p.add_argument("path")
+    push_p.add_argument("--message", "-m", default=None)
+    push_p.add_argument("--author", "-a", default=None)
+
+    pull_p = subparsers.add_parser("pull")
+    pull_p.add_argument("project")
+    pull_p.add_argument("tag")
+    pull_p.add_argument("target")
+    pull_p.add_argument("--policy", default="backup")
+
+    args, _ = parser.parse_known_args()
+
+    if args.command == "push":
+        push_cli(args.project, args.tag, args.path, args.message, args.author)
+    elif args.command == "pull":
+        pull_cli(args.project, args.tag, args.target, args.policy)
+    else:
+        try:
+            main_menu()
+        except KeyboardInterrupt:
+            print("\nExiting...")
+
+
+if __name__ == "__main__":
+    main()

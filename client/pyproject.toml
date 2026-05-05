@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-copalvx = "tui:main_menu"
+copalvx = "tui:main"
 
 [tool.uv]
 package = true
