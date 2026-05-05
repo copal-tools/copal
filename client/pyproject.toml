@@ -1,8 +1,7 @@
 [project]
 name = "asset-client"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Asset management client for CopalVX"
 requires-python = ">=3.12"
 dependencies = [
     "argparse>=1.4.0",
@@ -13,3 +12,13 @@ dependencies = [
 
 [project.scripts]
 copalvx = "tui:main_menu"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+include = ["tui.py", "copal_core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
