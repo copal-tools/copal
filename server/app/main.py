@@ -87,6 +87,9 @@ class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
 
+class DeleteProjectRequest(BaseModel):
+    delete_orphan_files: bool = False
+
 
 # --- ENDPOINTS ---
 
@@ -361,16 +364,126 @@ def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
     size_result = db.execute(query_size, {"cid": commit_id}).fetchone()
     total_bytes = size_result[0] if size_result[0] else 0
 
+    authors_rows = db.execute(text("""
+        SELECT DISTINCT c.author_name
+        FROM commits c WHERE c.project_id = :pid
+    """), {"pid": project_id}).fetchall()
+
     return {
         "project": project_name,
         "latest_version": tag,
         "author": author,
+        "authors": [r[0] for r in authors_rows],
         "updated_at": c_created.isoformat(),
         "created_at": p_created.isoformat(),
         "total_size_bytes": total_bytes,
         "total_size_mb": round(total_bytes / (1024 * 1024), 2),
         "message": msg
     }
+
+
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    status = {"api": "ok", "database": "ok", "seaweedfs": "ok"}
+
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        status["database"] = "unreachable"
+
+    try:
+        r = requests.get(f"{SEAWEED_MASTER_URL}/cluster/status", timeout=3)
+        if r.status_code != 200:
+            status["seaweedfs"] = "degraded"
+    except Exception:
+        status["seaweedfs"] = "unreachable"
+
+    healthy = all(v == "ok" for v in status.values())
+    return {"healthy": healthy, "services": status}
+
+
+@app.get("/projects")
+def list_projects(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT p.name, p.created_at,
+               COUNT(DISTINCT c.id) AS version_count,
+               COUNT(DISTINCT c.author_name) AS author_count,
+               MAX(c.created_at) AS last_push,
+               (SELECT c2.version_tag FROM commits c2
+                WHERE c2.project_id = p.id
+                ORDER BY c2.created_at DESC LIMIT 1) AS latest_version,
+               (SELECT c2.author_name FROM commits c2
+                WHERE c2.project_id = p.id
+                ORDER BY c2.created_at DESC LIMIT 1) AS last_author
+        FROM projects p
+        LEFT JOIN commits c ON c.project_id = p.id
+        GROUP BY p.id
+        ORDER BY MAX(c.created_at) DESC NULLS LAST
+    """)).fetchall()
+
+    return [
+        {
+            "name": r[0],
+            "created_at": r[1].isoformat() if r[1] else None,
+            "version_count": r[2],
+            "author_count": r[3],
+            "last_push": r[4].isoformat() if r[4] else None,
+            "latest_version": r[5],
+            "last_author": r[6],
+        }
+        for r in rows
+    ]
+
+
+@app.delete("/projects/{project_name}")
+def delete_project(project_name: str, request: DeleteProjectRequest, db: Session = Depends(get_db)):
+    logger.info("Deleting project: %s (orphan cleanup: %s)", project_name, request.delete_orphan_files)
+
+    project = db.execute(
+        text("SELECT id FROM projects WHERE name = :name"),
+        {"name": project_name}
+    ).fetchone()
+
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
+
+    project_id = project[0]
+
+    orphan_fids = []
+    if request.delete_orphan_files:
+        orphan_fids = [r[0] for r in db.execute(text("""
+            SELECT a.seaweed_fid FROM assets a
+            WHERE a.id IN (
+                SELECT DISTINCT pf.asset_id FROM project_files pf
+                JOIN commits c ON pf.commit_id = c.id
+                WHERE c.project_id = :pid
+            )
+            AND a.id NOT IN (
+                SELECT DISTINCT pf.asset_id FROM project_files pf
+                JOIN commits c ON pf.commit_id = c.id
+                WHERE c.project_id != :pid
+            )
+        """), {"pid": project_id}).fetchall()]
+
+        if orphan_fids:
+            db.execute(
+                text("DELETE FROM assets WHERE seaweed_fid IN :fids"),
+                {"fids": tuple(orphan_fids)}
+            )
+
+    db.execute(text("DELETE FROM projects WHERE id = :pid"), {"pid": project_id})
+    db.commit()
+
+    deleted_blobs = 0
+    for fid in orphan_fids:
+        try:
+            requests.delete(f"{SEAWEED_FILER_URL}{fid}", timeout=5)
+            deleted_blobs += 1
+        except Exception:
+            pass
+
+    logger.info("Project '%s' deleted. Orphan blobs removed: %d", project_name, deleted_blobs)
+    return {"status": "deleted", "project": project_name, "orphan_blobs_deleted": deleted_blobs}
 
 
 # Run with: uv run uvicorn main:app --reload
