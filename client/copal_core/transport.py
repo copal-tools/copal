@@ -1,4 +1,5 @@
 import os
+import hashlib
 import time
 import requests
 from requests.adapters import HTTPAdapter
@@ -67,8 +68,16 @@ def upload_file(file_path, file_hash):
     return last_result
 
 
-def download_file(fid, local_path, expected_size):
-    """Downloads a file from SeaweedFS.
+def _hash_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download_file(fid, local_path, expected_size, expected_hash):
+    """Downloads a file from SeaweedFS and verifies its hash after writing.
     Returns: (Success: bool, Message: str)
     """
     url = f"{FILER_BASE}{fid}"
@@ -93,6 +102,11 @@ def download_file(fid, local_path, expected_size):
                 with open(local_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
+
+            actual_hash = _hash_file(local_path)
+            if actual_hash != expected_hash:
+                os.remove(local_path)
+                return False, "Hash mismatch — file corrupted in transit"
 
             return True, "Success"
 

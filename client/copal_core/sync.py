@@ -59,6 +59,7 @@ class SyncEngine:
                 "dest_path": full_dest_path,
                 "fid": seaweed_fid,
                 "size": expected_size,
+                "hash": server_hash,
                 "source_local_path": None # Used only for LOCAL_COPY
             }
 
@@ -171,11 +172,11 @@ class SyncEngine:
                 return False, f"Copy Failed: {e}"
                 
         elif action == SyncAction.DOWNLOAD:
-            success = transport.download_file(task["fid"], dest, task["size"])
+            success, msg = transport.download_file(task["fid"], dest, task["size"], task["hash"])
             if success:
                 return True, "Downloaded"
             else:
-                return False, "Download Failed"
+                return False, f"Download Failed: {msg}"
                 
         return False, "Unknown Action"
     

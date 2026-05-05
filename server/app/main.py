@@ -1,6 +1,7 @@
 import logging
 import os
 import requests
+from urllib.parse import urlparse
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -17,8 +18,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SeaweedFS Internal (API -> Master)
+# SeaweedFS Internal (API -> Master / Filer)
 SEAWEED_MASTER_URL = os.getenv("SEAWEED_MASTER_URL", "http://127.0.0.1:9333")
+_master = urlparse(SEAWEED_MASTER_URL)
+SEAWEED_FILER_URL = f"{_master.scheme}://{_master.hostname}:8888"
 
 # Public IP (What we send to the client)
 # In Docker this comes from the compose env. Locally, defaults to your server IP.
@@ -147,6 +150,18 @@ def get_urls(request: UploadRequest):
 @app.post("/confirm_upload")
 def confirm_upload(request: ConfirmUploadRequest, db: Session = Depends(get_db)):
     logger.info("Confirming upload: %s... -> %s", request.file_hash[:8], request.seaweed_fid)
+
+    # Verify the blob actually landed in SeaweedFS before recording it.
+    try:
+        head = requests.head(f"{SEAWEED_FILER_URL}{request.seaweed_fid}", timeout=5)
+        if head.status_code != 200:
+            logger.warning("Blob not found in SeaweedFS: %s (HTTP %s)", request.seaweed_fid, head.status_code)
+            raise HTTPException(status_code=422, detail="Upload not found in storage. Re-upload the file.")
+    except HTTPException:
+        raise
+    except requests.RequestException as e:
+        logger.error("Could not reach SeaweedFS filer to verify blob: %s", e)
+        raise HTTPException(status_code=503, detail="Storage unavailable. Try again.")
 
     query = text("""
         INSERT INTO assets (file_hash, size_bytes, seaweed_fid, mime_type)
