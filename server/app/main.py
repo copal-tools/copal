@@ -173,22 +173,18 @@ def confirm_upload(request: ConfirmUploadRequest, db: Session = Depends(get_db))
 def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     logger.info("Creating commit '%s' for project '%s'", request.version_tag, request.project_id)
 
-    # --- STEP 1: Resolve project (auto-create kept for now, removed in Phase 6) ---
+    # --- STEP 1: Resolve project ---
     project = db.execute(
         text("SELECT id FROM projects WHERE name = :name"),
         {"name": request.project_id}
     ).fetchone()
 
     if not project:
-        logger.info("Project '%s' not found — creating it.", request.project_id)
-        result = db.execute(
-            text("INSERT INTO projects (name) VALUES (:name) RETURNING id"),
-            {"name": request.project_id}
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{request.project_id}' not found. Create it first with a push."
         )
-        project_id = result.fetchone()[0]
-        db.commit()
-    else:
-        project_id = project[0]
+    project_id = project[0]
 
     # --- STEP 2: Validate ALL hashes resolve BEFORE writing anything ---
     # If any upload silently failed, we catch it here and abort cleanly.
