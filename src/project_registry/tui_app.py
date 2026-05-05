@@ -7,6 +7,7 @@ Screens:
 """
 
 import json
+import threading
 import urllib.request
 import yaml
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from textual.widgets import (
 )
 
 from project_registry.config import DATA_DIR
+from project_registry import copalvx_api
 from project_registry.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry,
@@ -414,10 +416,103 @@ class DashboardScreen(Screen):
         self.app.push_screen(InitScreen())
 
 
+class CopalVXPushModal(ModalScreen):
+    """Confirm push: shows suggested tag + optional message, then runs copalvx push."""
+
+    DEFAULT_CSS = """
+    CopalVXPushModal { align: center middle; }
+    #cvx-modal-box {
+        width: 60;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #cvx-modal-hint { margin-top: 1; color: $text-muted; }
+    """
+
+    def __init__(self, project_name: str, suggested_tag: str, project_path: str, author: str) -> None:
+        super().__init__()
+        self._project_name = project_name
+        self._suggested_tag = suggested_tag
+        self._project_path  = project_path
+        self._author        = author
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cvx-modal-box"):
+            yield Label(f"[bold]Push:[/bold] {self._project_name}")
+            yield Rule()
+            yield Label("Version tag:")
+            yield Input(value=self._suggested_tag, id="tag-input")
+            yield Label("Message (optional):")
+            yield Input(placeholder="e.g. final grade pass", id="msg-input")
+            yield Static("[dim]Enter to push  •  Esc to cancel[/dim]", id="cvx-modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#tag-input", Input).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        tag = self.query_one("#tag-input", Input).value.strip()
+        msg = self.query_one("#msg-input", Input).value.strip()
+        if tag:
+            self.dismiss({"tag": tag, "message": msg})
+
+
+class CopalVXPullModal(ModalScreen):
+    """Select a version to pull, then runs copalvx pull."""
+
+    DEFAULT_CSS = """
+    CopalVXPullModal { align: center middle; }
+    #cvx-pull-box {
+        width: 60;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #cvx-modal-hint { margin-top: 1; color: $text-muted; }
+    """
+
+    def __init__(self, project_name: str, versions: list[str], project_path: str) -> None:
+        super().__init__()
+        self._project_name = project_name
+        self._versions      = versions
+        self._project_path  = project_path
+
+    def compose(self) -> ComposeResult:
+        options = [(v, v) for v in self._versions]
+        with Vertical(id="cvx-pull-box"):
+            yield Label(f"[bold]Pull:[/bold] {self._project_name}")
+            yield Rule()
+            yield Label("Select version:")
+            yield Select(options, value=self._versions[0] if self._versions else None, id="ver-select")
+            yield Static("[dim]Enter to pull  •  Esc to cancel[/dim]", id="cvx-modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one(Select).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+        elif event.key == "enter":
+            sel = self.query_one(Select)
+            if sel.value:
+                self.dismiss({"tag": sel.value})
+            event.stop()
+
+
 class ProjectDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("t",      "toggle_timer",   "Start/stop timer", priority=True),
+        Binding("p",      "push_copalvx",   "Push"),
+        Binding("l",      "pull_copalvx",   "Pull"),
         Binding("r",      "refresh",        "Refresh"),
     ]
 
@@ -563,6 +658,107 @@ class ProjectDetailScreen(Screen):
                 self._refresh_data()
 
             self.app.push_screen(TimerStartModal(), on_description)
+
+    def _cvx_project_name(self) -> str:
+        """CopalVX project name from copalvx block, else folder name."""
+        cvx_name = self._data.get("copalvx", {}).get("project_name")
+        if cvx_name:
+            return cvx_name
+        path = self._project.get("path", "")
+        return Path(path).name if path else self._data.get("name", "unknown")
+
+    def _cvx_next_tag(self, versions: list[str]) -> str:
+        if not versions:
+            return "v1.0"
+        latest = versions[0]
+        try:
+            parts = latest.lstrip("v").split(".")
+            parts[-1] = str(int(parts[-1]) + 1)
+            return "v" + ".".join(parts)
+        except Exception:
+            return "v1.0"
+
+    def action_push_copalvx(self) -> None:
+        project_name = self._cvx_project_name()
+        project_path = self._project.get("path", "")
+        author       = self._data.get("id", "")
+
+        versions     = copalvx_api.get_versions(project_name)
+        suggested    = self._cvx_next_tag(versions)
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+            tag = result["tag"]
+            msg = result.get("message", "")
+            self.notify(f"Pushing {project_name} @ {tag}…", title="CopalVX")
+
+            def _run():
+                try:
+                    proc = copalvx_api.run_push(project_name, tag, project_path, msg, author)
+                    out, _ = proc.communicate()
+                    if proc.returncode == 0:
+                        self.call_from_thread(
+                            self.notify, f"{project_name} @ {tag} pushed.", title="✓ CopalVX"
+                        )
+                    else:
+                        last_line = out.strip().splitlines()[-1] if out.strip() else "unknown error"
+                        self.call_from_thread(
+                            self.notify, last_line, title="✗ Push failed", severity="error"
+                        )
+                    self.call_from_thread(self._refresh_data)
+                except Exception as e:
+                    self.call_from_thread(
+                        self.notify, str(e), title="✗ Push error", severity="error"
+                    )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        self.app.push_screen(
+            CopalVXPushModal(project_name, suggested, project_path, author),
+            on_confirm,
+        )
+
+    def action_pull_copalvx(self) -> None:
+        project_name = self._cvx_project_name()
+        project_path = self._project.get("path", "")
+
+        versions = copalvx_api.get_versions(project_name)
+        if not versions:
+            self.notify("No versions found on server.", title="CopalVX", severity="warning")
+            return
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+            tag = result["tag"]
+            self.notify(f"Pulling {project_name} @ {tag}…", title="CopalVX")
+
+            def _run():
+                try:
+                    proc = copalvx_api.run_pull(project_name, tag, project_path)
+                    out, _ = proc.communicate()
+                    if proc.returncode == 0:
+                        self.call_from_thread(
+                            self.notify, f"{project_name} @ {tag} pulled.", title="✓ CopalVX"
+                        )
+                    else:
+                        last_line = out.strip().splitlines()[-1] if out.strip() else "unknown error"
+                        self.call_from_thread(
+                            self.notify, last_line, title="✗ Pull failed", severity="error"
+                        )
+                    self.call_from_thread(self._refresh_data)
+                except Exception as e:
+                    self.call_from_thread(
+                        self.notify, str(e), title="✗ Pull error", severity="error"
+                    )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        self.app.push_screen(
+            CopalVXPullModal(project_name, versions, project_path),
+            on_confirm,
+        )
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
