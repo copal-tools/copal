@@ -1,14 +1,110 @@
 # Copal-VX (Version Exchange)
 
-**Copal-VX** is a specialized Asset Management System designed to handle the heavy lifting of modern media pipelines. Unlike standard Git (which chokes on large binaries) or raw SMB shares (which lack versioning), Copal-VX combines the speed of tiered object storage with the safety of semantic versioning.
+**Copal-VX** is a content-addressable asset management system for media/VFX pipelines. Push a folder of files to a central server (versioned), pull any version back on any machine on the LAN. Think "git for large files" — without the complexity.
+
+Files are stored by SHA-256 hash. Uploading the same bytes twice is a no-op. A "version" is just a pointer: project name + version tag = a list of hashes.
 
 ## Architecture
 
+| Layer | Component | Port |
+|-------|-----------|------|
+| Object storage | SeaweedFS Filer | 8888 |
+| API | FastAPI | 8005 |
+| Database | PostgreSQL 15 | internal |
+| Client | Python CLI / TUI | — |
 
-* **Data Plane:** SeaweedFS Filer (Port 8888) handles chunking, deduplication, and storage on mixed SSD/HDD tiers.
-* **Control Plane:** A FastAPI service manages project manifests, version tags, and access control.
-* **Client:** Lightweight Python tools for "Push" (Upload) and "Pull" (Checkout) workflows.
+The server runs in Docker on a Linux machine. The client runs on Windows and macOS.
 
-## Quick Start
-1.  **Server:** `cd server && docker-compose up -d`
-2.  **Client:** `cd client && uv sync`
+---
+
+## Client Install
+
+### Mac
+
+```bash
+# 1. Install uv (skip if already installed)
+brew install uv
+
+# 2. Add uv tools to PATH (one-time shell config)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+
+# 3. Install CopalVX
+uv tool install "git+https://github.com/Sifdone/Copal-VX.git#subdirectory=client"
+
+# 4. Configure (server IP, author name, projects root)
+copalvx setup
+```
+
+### Windows
+
+```powershell
+# 1. Install uv (skip if already installed)
+winget install astral-sh.uv
+
+# 2. Install CopalVX
+uv tool install "git+https://github.com/Sifdone/Copal-VX.git#subdirectory=client"
+
+# 3. Configure
+copalvx setup
+```
+
+### Update
+
+```bash
+uv tool upgrade copalvx
+```
+
+---
+
+## Server Setup
+
+The server runs on a dedicated Linux machine via Docker Compose.
+
+```bash
+# Clone the repo on the server
+git clone https://github.com/Sifdone/Copal-VX.git
+cd Copal-VX/server
+
+# Create .env from the template and fill in your values
+cp .env.example .env
+
+# Start all services (API + PostgreSQL + SeaweedFS)
+docker-compose up -d
+```
+
+To update the API after a code change (DB and SeaweedFS keep running):
+```bash
+git pull
+docker-compose up -d --build asset-api
+```
+
+---
+
+## Usage
+
+```bash
+copalvx           # Open the dashboard
+copalvx setup     # Reconfigure (server IP, author, projects root)
+```
+
+The dashboard shows system health (API / DB / SeaweedFS), lists all projects, and lets you push, pull, or delete from the terminal.
+
+---
+
+## Integration with ProjectRegistry
+
+Push and pull can also be triggered from the ProjectRegistry TUI using the `p` and `l` keybindings in the project detail screen. See the [ProjectRegistry repo](https://github.com/Sifdone/ProjectRegistry) for setup.
+
+---
+
+## Default Config
+
+Stored at `~/.copal/config.json` after running `copalvx setup`.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `server_ip` | `192.168.178.161` | Server address |
+| `api_port` | `8005` | FastAPI port |
+| `filer_port` | `8888` | SeaweedFS filer port |
+| `default_author` | system username | Name used in commits |
+| `default_projects_root` | `~/Projects` | Default directory for push/pull |
