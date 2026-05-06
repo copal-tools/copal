@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-06 (after Phases 1-8 + Parts 1-2 complete).
+> Last updated: 2026-05-06 (after Phases 1-8 + Parts 1-2 + post-init push complete).
 
 ---
 
@@ -255,7 +255,7 @@ Do not change replication to `001` without adding a second volume server.
 | 6 | Explicit project creation: POST /projects (201/409), ensure_project() called before every push, auto-creation removed from /commit; also fixed missing UNIQUE on projects.name and synced init_db.py to match live schema | main.py, api.py, tui.py, init_db.py |
 | 8 | Cleanup: deleted legacy scripts (client_connect.py, checkout.py); blob verification in /confirm_upload (HEAD to SeaweedFS filer before DB insert); download re-hash (SHA-256 after write, delete+fail on mismatch); fixed tuple-unpacking bug in sync.py; CLI entry point (`uv run copalvx`) | main.py, transport.py, sync.py, pyproject.toml |
 | Part 1 | Server API additions: GET /health, GET /projects (with stats), DELETE /projects/{name} (with orphan cleanup), enhanced /metadata with authors list | main.py |
-| Part 2 | pm-tui push/pull integration: argparse CLI dispatch, push_cli/pull_cli functions, progress callbacks in SyncEngine, config auto-persist, subprocess streaming | tui.py, config.py + ProjectRegistry copalvx_api.py, tui_app.py |
+| Part 2 | pm-tui push/pull integration: argparse CLI dispatch, push_cli/pull_cli functions, progress callbacks in SyncEngine, config auto-persist, subprocess streaming, post-init auto-push | tui.py, config.py + ProjectRegistry copalvx_api.py, tui_app.py |
 
 ---
 
@@ -291,8 +291,11 @@ Added CopalVX push/pull to ProjectRegistry's TUI (`E:\Development\ProjectRegistr
 - Progress modal (`CopalVXProgressModal`): streams subprocess output line-by-line with a `ProgressBar` and `RichLog`
 - CLI mode: `tui.py` has `push_cli()` / `pull_cli()` dispatched via argparse subcommands
 - Entry point: `uv run copalvx push <project> <tag> <path> [--message] [--author]`
+- Post-init auto-push: creating a new project in pm-tui automatically pushes v1.0 to CopalVX (progress modal shown immediately after project creation)
 
 **Integration pattern:** pm-tui invokes `uv run copalvx push/pull` as a subprocess (cwd from `client_path` in config). This keeps the two repos fully independent — no shared imports, no tight coupling. Progress lines (`[UPLOAD] 3/10 filename`) are parsed by pm-tui to update the progress bar.
+
+**Author handling:** pm-tui passes empty author to the subprocess. `push_cli` falls back to `default_author` from `~/.copal/config.json` (the actual user name), avoiding the earlier mistake of passing the PM project ID as the commit author.
 
 ### Part 3 — CopalVX dashboard TUI (NOT STARTED)
 
