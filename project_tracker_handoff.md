@@ -22,6 +22,7 @@
 9. [Known Gaps & Planned Features](#9-known-gaps--planned-features)
 10. [pyproject.toml Reference](#10-pyprojecttoml-reference)
 11. [Quick Reference Card](#11-quick-reference-card)
+12. [CopalVX Integration](#12-copalvx-integration-added-2026-05-06)
 
 ---
 
@@ -457,6 +458,72 @@ build-backend = "hatchling.build"
 | `POST /start` | Begin tracking `{projectId, task?}` |
 | `POST /stop` | End tracking `{reason?}` |
 | `POST /ping` | Keep-alive — resets idle timer |
+
+---
+
+## 12. CopalVX Integration (added 2026-05-06)
+
+ProjectRegistry's TUI (`pm-tui`) is the **primary interface** for pushing/pulling CopalVX versions. The integration is subprocess-based — no shared imports between the two repos.
+
+### New file: `src/project_registry/copalvx_api.py`
+
+| Function | Purpose |
+|----------|---------|
+| `_config()` | Reads `~/.copal/config.json` (handles BOM via `utf-8-sig`) |
+| `_base_url()` | Derives API URL from config |
+| `_client_path()` | Returns `client_path` from config (required) |
+| `get_versions(name)` | GET `/projects/{name}/versions`, returns `[]` on error |
+| `health()` | GET `/health`, returns `{"healthy": False}` on error |
+| `run_push(...)` | Spawns `uv run copalvx push` subprocess |
+| `run_pull(...)` | Spawns `uv run copalvx pull` subprocess |
+
+### TUI additions in `tui_app.py`
+
+| Class/Method | Purpose |
+|--------------|---------|
+| `CopalVXPushModal` | Modal: input version tag + message |
+| `CopalVXPullModal` | Modal: select version from dropdown |
+| `CopalVXProgressModal` | Modal: ProgressBar + RichLog, streams subprocess output |
+| `_cvx_stream_subprocess()` | Thread helper: reads stdout line-by-line, parses `[UPLOAD]`/`[DOWNLOAD]` progress lines |
+| `action_push_copalvx()` | Keybinding `p` — fetches versions, suggests next tag, runs push |
+| `action_pull_copalvx()` | Keybinding `l` — fetches versions, user selects, runs pull |
+
+### Prerequisites
+
+`~/.copal/config.json` must contain:
+```json
+{
+    "client_path": "E:\\Development\\Copal-VX\\client"
+}
+```
+Without this key, push/pull raises a clear error explaining what to add.
+
+### Subprocess protocol
+
+pm-tui spawns `uv run copalvx push <project> <tag> <path>` with:
+- `cwd` = `client_path` from config
+- `PYTHONIOENCODING=utf-8` (prevents cp1252 emoji crash)
+- `PYTHONUNBUFFERED=1` (enables real-time line streaming)
+- `bufsize=1` + `encoding="utf-8"` on the Popen
+
+Progress lines from the CopalVX CLI follow the format:
+```
+[UPLOAD] 3/10 filename.exr
+[DOWNLOAD] 7/20 texture.png
+```
+These are parsed by `_cvx_stream_subprocess()` to update the ProgressBar.
+
+### Known gotchas (pm-tui ↔ CopalVX)
+
+1. **`client_path` is mandatory** — auto-detection via `Path(__file__)` was removed because it resolves to site-packages, not the source dir. Must be set explicitly.
+
+2. **UTF-8 BOM in config.json** — PowerShell 5.1's `Set-Content -Encoding utf8` writes BOM. Use `utf-8-sig` when reading JSON, or write with `[System.Text.UTF8Encoding]::new($false)`.
+
+3. **cp1252 encoding crash** — Windows subprocess stdout defaults to cp1252 when piped. Emoji characters in CopalVX print statements crash without `PYTHONIOENCODING=utf-8` in env.
+
+4. **`call_from_thread` lives on App** — In Textual, background threads must use `self.app.call_from_thread()`, not `self.call_from_thread()`. The method doesn't exist on Screen.
+
+5. **`PYTHONUNBUFFERED=1` required** — Without it, subprocess output is buffered and the progress modal sees nothing until the process exits.
 
 ---
 

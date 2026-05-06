@@ -1,6 +1,6 @@
 """CopalVX integration for pm-tui: version fetching and subprocess push/pull."""
 import json
-import shutil
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -11,7 +11,7 @@ def _config() -> dict:
     cfg_path = Path.home() / ".copal" / "config.json"
     if not cfg_path.exists():
         return {}
-    return json.loads(cfg_path.read_text(encoding="utf-8"))
+    return json.loads(cfg_path.read_text(encoding="utf-8-sig"))
 
 
 def _base_url() -> str:
@@ -49,7 +49,9 @@ def run_push(project: str, tag: str, path: str, message: str = "", author: str =
     """Starts a non-interactive push subprocess. Returns the Popen object."""
     client_dir = _client_path()
     if not client_dir:
-        raise RuntimeError("CopalVX client_path not set in ~/.copal/config.json")
+        raise RuntimeError(
+            "Add \"client_path\": \"<path-to-CopalVX-client>\" to ~/.copal/config.json"
+        )
 
     cmd = ["uv", "run", "copalvx", "push", project, tag, path]
     if message:
@@ -57,12 +59,16 @@ def run_push(project: str, tag: str, path: str, message: str = "", author: str =
     if author:
         cmd += ["--author", author]
 
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(
         cmd,
         cwd=client_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        bufsize=1,
         text=True,
+        encoding="utf-8",
+        env=env,
     )
 
 
@@ -70,14 +76,20 @@ def run_pull(project: str, tag: str, target: str, policy: str = "backup") -> sub
     """Starts a non-interactive pull subprocess. Returns the Popen object."""
     client_dir = _client_path()
     if not client_dir:
-        raise RuntimeError("CopalVX client_path not set in ~/.copal/config.json")
+        raise RuntimeError(
+            "Add \"client_path\": \"<path-to-CopalVX-client>\" to ~/.copal/config.json"
+        )
 
     cmd = ["uv", "run", "copalvx", "pull", project, tag, target, "--policy", policy]
 
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(
         cmd,
         cwd=client_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        bufsize=1,
         text=True,
+        encoding="utf-8",
+        env=env,
     )

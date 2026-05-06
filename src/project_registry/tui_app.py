@@ -19,7 +19,7 @@ from textual.containers import ScrollableContainer, Vertical, Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button, DataTable, Footer, Header, Input, Label,
-    RadioButton, RadioSet, Rule, Select, Static,
+    ProgressBar, RadioButton, RadioSet, RichLog, Rule, Select, Static,
 )
 
 from project_registry.config import DATA_DIR
@@ -507,6 +507,57 @@ class CopalVXPullModal(ModalScreen):
             event.stop()
 
 
+class CopalVXProgressModal(ModalScreen):
+    """Shows streaming progress for a CopalVX push/pull subprocess."""
+
+    DEFAULT_CSS = """
+    CopalVXProgressModal { align: center middle; }
+    #cvx-progress-box {
+        width: 80;
+        height: 24;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #cvx-progress-bar { margin: 1 0; }
+    #cvx-progress-log { height: 1fr; }
+    #cvx-progress-hint { color: $text-muted; }
+    """
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self._title = title
+        self._done = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cvx-progress-box"):
+            yield Label(f"[bold]{self._title}[/bold]")
+            yield ProgressBar(total=100, show_eta=False, id="cvx-progress-bar")
+            yield RichLog(highlight=True, markup=True, id="cvx-progress-log")
+            yield Static("[dim]Esc to dismiss when done[/dim]", id="cvx-progress-hint")
+
+    def on_key(self, event) -> None:
+        if event.key == "escape" and self._done:
+            self.dismiss(None)
+            event.stop()
+
+    def update_progress(self, completed: int, total: int) -> None:
+        bar = self.query_one("#cvx-progress-bar", ProgressBar)
+        bar.update(total=total, progress=completed)
+
+    def write_line(self, text: str) -> None:
+        self.query_one("#cvx-progress-log", RichLog).write(text)
+
+    def mark_done(self, success: bool) -> None:
+        self._done = True
+        log = self.query_one("#cvx-progress-log", RichLog)
+        if success:
+            log.write("[green bold]Done.[/green bold]")
+        else:
+            log.write("[red bold]Failed — see above.[/red bold]")
+        self.query_one("#cvx-progress-hint", Static).update("[dim]Esc to close[/dim]")
+
+
 class ProjectDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
@@ -678,6 +729,29 @@ class ProjectDetailScreen(Screen):
         except Exception:
             return "v1.0"
 
+    def _cvx_stream_subprocess(self, proc, progress_modal: "CopalVXProgressModal") -> None:
+        """Read subprocess stdout line-by-line, update progress modal. Runs in a thread."""
+        import re
+        pattern = re.compile(r"\[(UPLOAD|DOWNLOAD)\]\s+(\d+)/(\d+)\s+(.*)")
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                m = pattern.match(line)
+                if m:
+                    done, total = int(m.group(2)), int(m.group(3))
+                    self.app.call_from_thread(progress_modal.update_progress, done, total)
+                    self.app.call_from_thread(progress_modal.write_line, m.group(4))
+                else:
+                    self.app.call_from_thread(progress_modal.write_line, line)
+            proc.wait()
+            success = proc.returncode == 0
+            self.app.call_from_thread(progress_modal.mark_done, success)
+            if success:
+                self.app.call_from_thread(self._refresh_data)
+        except Exception as e:
+            self.app.call_from_thread(progress_modal.write_line, f"[red]{e}[/red]")
+            self.app.call_from_thread(progress_modal.mark_done, False)
+
     def action_push_copalvx(self) -> None:
         project_name = self._cvx_project_name()
         project_path = self._project.get("path", "")
@@ -691,26 +765,17 @@ class ProjectDetailScreen(Screen):
                 return
             tag = result["tag"]
             msg = result.get("message", "")
-            self.notify(f"Pushing {project_name} @ {tag}…", title="CopalVX")
+
+            progress = CopalVXProgressModal(f"Push: {project_name} @ {tag}")
+            self.app.push_screen(progress)
 
             def _run():
                 try:
                     proc = copalvx_api.run_push(project_name, tag, project_path, msg, author)
-                    out, _ = proc.communicate()
-                    if proc.returncode == 0:
-                        self.call_from_thread(
-                            self.notify, f"{project_name} @ {tag} pushed.", title="✓ CopalVX"
-                        )
-                    else:
-                        last_line = out.strip().splitlines()[-1] if out.strip() else "unknown error"
-                        self.call_from_thread(
-                            self.notify, last_line, title="✗ Push failed", severity="error"
-                        )
-                    self.call_from_thread(self._refresh_data)
+                    self._cvx_stream_subprocess(proc, progress)
                 except Exception as e:
-                    self.call_from_thread(
-                        self.notify, str(e), title="✗ Push error", severity="error"
-                    )
+                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                    self.app.call_from_thread(progress.mark_done, False)
 
             threading.Thread(target=_run, daemon=True).start()
 
@@ -732,26 +797,17 @@ class ProjectDetailScreen(Screen):
             if result is None:
                 return
             tag = result["tag"]
-            self.notify(f"Pulling {project_name} @ {tag}…", title="CopalVX")
+
+            progress = CopalVXProgressModal(f"Pull: {project_name} @ {tag}")
+            self.app.push_screen(progress)
 
             def _run():
                 try:
                     proc = copalvx_api.run_pull(project_name, tag, project_path)
-                    out, _ = proc.communicate()
-                    if proc.returncode == 0:
-                        self.call_from_thread(
-                            self.notify, f"{project_name} @ {tag} pulled.", title="✓ CopalVX"
-                        )
-                    else:
-                        last_line = out.strip().splitlines()[-1] if out.strip() else "unknown error"
-                        self.call_from_thread(
-                            self.notify, last_line, title="✗ Pull failed", severity="error"
-                        )
-                    self.call_from_thread(self._refresh_data)
+                    self._cvx_stream_subprocess(proc, progress)
                 except Exception as e:
-                    self.call_from_thread(
-                        self.notify, str(e), title="✗ Pull error", severity="error"
-                    )
+                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                    self.app.call_from_thread(progress.mark_done, False)
 
             threading.Thread(target=_run, daemon=True).start()
 
