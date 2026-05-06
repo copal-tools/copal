@@ -387,7 +387,11 @@ def push_cli(project, tag, path, message=None, author=None):
         print(f"Uploading {len(needed)} new files...")
         to_upload = [f for f in local_assets if f["path"] in needed]
         engine = SyncEngine(max_threads=8)
-        successful_uploads = engine.execute_upload_plan(to_upload, progress_callback=None)
+
+        def _upload_progress(done, total, msg):
+            print(f"[UPLOAD] {done}/{total} {msg}", flush=True)
+
+        successful_uploads = engine.execute_upload_plan(to_upload, progress_callback=_upload_progress)
         print(f"Uploaded {len(successful_uploads)}/{len(to_upload)}")
 
         if len(successful_uploads) != len(to_upload):
@@ -434,7 +438,11 @@ def pull_cli(project, tag, target, policy="backup"):
 
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
     plan = engine.generate_plan(files, target)
-    results = engine.execute_plan(plan, progress_callback=None)
+
+    def _download_progress(done, total, msg):
+        print(f"[DOWNLOAD] {done}/{total} {msg}", flush=True)
+
+    results = engine.execute_plan(plan, progress_callback=_download_progress)
 
     print(f"Done. Success: {results['success']} | Fail: {results['fail']} | Skipped: {results['skip']}")
 

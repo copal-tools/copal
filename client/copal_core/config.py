@@ -13,14 +13,11 @@ DEFAULT_CONFIG = {
     "filer_port": 8888,
     "default_author": os.getenv("USERNAME", "artist"),
     "default_projects_root": "",
-    # Absolute path to the CopalVX client directory.
-    # pm-tui uses this to run `uv run copalvx push/pull` as a subprocess.
-    "client_path": str(Path(__file__).parent.parent.resolve()),
 }
 
 
 def load_config():
-    """Loads config from JSON, creates it if missing."""
+    """Loads config from JSON, creates it if missing. Persists new default keys."""
     if not CONFIG_FILE.exists():
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -30,12 +27,20 @@ def load_config():
         except Exception as e:
             print(f"⚠️  Could not create config file: {e}")
             return DEFAULT_CONFIG
-    
+
     try:
         with open(CONFIG_FILE, "r") as f:
-            # Merge user config over defaults (safe update)
             user_config = json.load(f)
-            return {**DEFAULT_CONFIG, **user_config}
+            merged = {**DEFAULT_CONFIG, **user_config}
+
+        if set(merged) - set(user_config):
+            try:
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(merged, f, indent=4)
+            except Exception:
+                pass
+
+        return merged
     except Exception as e:
         print(f"⚠️  Error reading config: {e}. Using defaults.")
         return DEFAULT_CONFIG

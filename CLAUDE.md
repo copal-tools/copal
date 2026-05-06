@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-06 (after Phases 1-8 + Part 1 API additions complete).
+> Last updated: 2026-05-06 (after Phases 1-8 + Parts 1-2 complete).
 
 ---
 
@@ -55,10 +55,10 @@ E:\Development\Copal-VX\
 ├── CLAUDE.md                          ← You are here
 │
 ├── client/
-│   ├── tui.py                         ← Main entry point (run with `uv run copalvx`)
+│   ├── tui.py                         ← Main entry point (TUI + CLI dispatch via argparse)
 │   ├── pyproject.toml                 ← uv project config (hatchling build)
 │   └── copal_core/
-│       ├── config.py                  ← Config loader: ~/.copal/config.json
+│       ├── config.py                  ← Config loader: ~/.copal/config.json (auto-persists new keys)
 │       ├── api.py                     ← HTTP calls to FastAPI server
 │       ├── transport.py               ← File upload/download to SeaweedFS
 │       ├── fs.py                      ← File scan, SHA-256 hash, .copalignore
@@ -188,11 +188,21 @@ Each machine has `~/.copal/config.json` (auto-created on first run):
     "api_port": 8005,
     "filer_port": 8888,
     "default_author": "simon",
-    "default_projects_root": "D:\\Projects"
+    "default_projects_root": "D:\\Projects",
+    "client_path": "E:\\Development\\Copal-VX\\client"
 }
 ```
 
-Change `server_ip` to point at the server. All endpoints derive from this.
+| Key | Purpose |
+|-----|---------|
+| `server_ip` | Server address — all API/filer endpoints derive from this |
+| `api_port` | FastAPI port (default 8005) |
+| `filer_port` | SeaweedFS filer port (default 8888) |
+| `default_author` | Used in commits when no author specified |
+| `default_projects_root` | Default root for project folders |
+| `client_path` | **Required for pm-tui integration.** Absolute path to the CopalVX client directory where `pyproject.toml` lives. pm-tui uses this as `cwd` when running `uv run copalvx push/pull` as a subprocess. |
+
+**Config migration:** `config.py` now auto-persists any new default keys to disk. If a key exists in `DEFAULT_CONFIG` but not in the user's file, it gets written back on next client startup. This prevents future "missing key" issues when new config keys are added.
 
 ---
 
@@ -244,6 +254,8 @@ Do not change replication to `001` without adding a second volume server.
 | 5 | Atomic commit: validate ALL hashes before writing, single atomic transaction with full rollback on any failure | main.py /commit endpoint |
 | 6 | Explicit project creation: POST /projects (201/409), ensure_project() called before every push, auto-creation removed from /commit; also fixed missing UNIQUE on projects.name and synced init_db.py to match live schema | main.py, api.py, tui.py, init_db.py |
 | 8 | Cleanup: deleted legacy scripts (client_connect.py, checkout.py); blob verification in /confirm_upload (HEAD to SeaweedFS filer before DB insert); download re-hash (SHA-256 after write, delete+fail on mismatch); fixed tuple-unpacking bug in sync.py; CLI entry point (`uv run copalvx`) | main.py, transport.py, sync.py, pyproject.toml |
+| Part 1 | Server API additions: GET /health, GET /projects (with stats), DELETE /projects/{name} (with orphan cleanup), enhanced /metadata with authors list | main.py |
+| Part 2 | pm-tui push/pull integration: argparse CLI dispatch, push_cli/pull_cli functions, progress callbacks in SyncEngine, config auto-persist, subprocess streaming | tui.py, config.py + ProjectRegistry copalvx_api.py, tui_app.py |
 
 ---
 
@@ -269,13 +281,18 @@ Do not change replication to `001` without adding a second volume server.
 
 **Design decision:** CopalVX TUI becomes a service dashboard. Push/pull moves to pm-tui as the primary interface. CopalVX TUI keeps push/pull as a backup (standalone use without pm).
 
-### Part 2 — pm-tui push/pull integration (NOT STARTED)
+### Part 2 — pm-tui push/pull integration (COMPLETE)
 
-Add CopalVX push/pull to ProjectRegistry's TUI (`E:\Development\ProjectRegistry`):
-- New file: `src/project_registry/copalvx_api.py` — HTTP client reading `~/.copal/config.json`
+Added CopalVX push/pull to ProjectRegistry's TUI (`E:\Development\ProjectRegistry`):
+- New file: `src/project_registry/copalvx_api.py` — HTTP client + subprocess launcher
 - Keybindings `p` (push) and `l` (pull) in `ProjectDetailScreen`
-- Push: project path from registry, auto-suggest next version tag, selection-based (no typing)
-- Pull: fetch versions from server, user selects from list
+- Push: project path from registry, auto-suggest next version tag via modal input
+- Pull: fetch versions from server, user selects from dropdown
+- Progress modal (`CopalVXProgressModal`): streams subprocess output line-by-line with a `ProgressBar` and `RichLog`
+- CLI mode: `tui.py` has `push_cli()` / `pull_cli()` dispatched via argparse subcommands
+- Entry point: `uv run copalvx push <project> <tag> <path> [--message] [--author]`
+
+**Integration pattern:** pm-tui invokes `uv run copalvx push/pull` as a subprocess (cwd from `client_path` in config). This keeps the two repos fully independent — no shared imports, no tight coupling. Progress lines (`[UPLOAD] 3/10 filename`) are parsed by pm-tui to update the progress bar.
 
 ### Part 3 — CopalVX dashboard TUI (NOT STARTED)
 
@@ -357,3 +374,13 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 5. **projects.description is populated by POST /projects** (added in Phase 6). Older projects created before Phase 6 have NULL description — safe to ignore.
 
 6. **The client registry (`~/.copal/projects.json`) is separate from ProjectRegistry.** It's just a "recently used" list for the TUI's convenience. Max 20 entries.
+
+7. **`client_path` must be set explicitly in `~/.copal/config.json`.** Auto-detection via `Path(__file__)` is unreliable because `__file__` resolves to the installed site-packages location (e.g. `.venv/Lib/site-packages/copal_core/config.py`), not the source directory. pm-tui reads the raw JSON — it doesn't use client-side config merging.
+
+8. **PowerShell `Set-Content -Encoding utf8` writes UTF-8 with BOM on Windows PowerShell 5.1.** Python's `json.loads()` chokes on the BOM with "Unexpected UTF-8 BOM" error. Fix: use `encoding="utf-8-sig"` when reading, or write with `[System.Text.UTF8Encoding]::new($false)` from PowerShell. `copalvx_api.py` already uses `utf-8-sig`.
+
+9. **Subprocess stdout encoding defaults to cp1252 on Windows when piped.** Emoji in print statements (`pm_hooks.py` uses them) causes `UnicodeEncodeError: 'charmap' codec can't encode character`. Fix: pass `PYTHONIOENCODING=utf-8` in the subprocess environment.
+
+10. **`call_from_thread()` is on `App`, not `Screen`.** In Textual, use `self.app.call_from_thread()` not `self.call_from_thread()` when calling from a background thread inside a Screen subclass.
+
+11. **`PYTHONUNBUFFERED=1` required for real-time subprocess streaming.** Without it, Python buffers stdout in a subprocess, so the parent can't read lines as they're printed. Set it in the subprocess env alongside `PYTHONIOENCODING`.
