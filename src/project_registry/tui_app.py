@@ -727,13 +727,13 @@ class ProjectDetailScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield ScrollableContainer(Vertical(id="detail-body"))
+        yield ScrollableContainer(id="detail-body")
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_data()
         self.set_interval(1, self._tick_timer)
-        self.query_one(ScrollableContainer).focus()
+        self.query_one("#detail-body", ScrollableContainer).focus()
         if self._auto_push:
             self._auto_push = False
             self.set_timer(0.3, self._do_auto_push)
@@ -763,7 +763,7 @@ class ProjectDetailScreen(Screen):
 
     def _build(self) -> None:
         d    = self._data
-        body = self.query_one("#detail-body", Vertical)
+        body = self.query_one("#detail-body", ScrollableContainer)
         body.remove_children()
 
         def row(label: str, value: str) -> Static:
@@ -1095,7 +1095,7 @@ class PMApp(App):
     DataTable {
         height: 1fr;
     }
-    ProjectDetailScreen ScrollableContainer {
+    #detail-body {
         height: 1fr;
     }
     .section-title {
