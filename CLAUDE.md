@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-06 (after Phases 1-8 + Parts 1-2 + post-init push complete).
+> Last updated: 2026-05-06 (after QoL additions: rename, delete fix, pm-tui project management).
 
 ---
 
@@ -257,6 +257,8 @@ Do not change replication to `001` without adding a second volume server.
 | Part 1 | Server API additions: GET /health, GET /projects (with stats), DELETE /projects/{name} (with orphan cleanup), enhanced /metadata with authors list | main.py |
 | Part 2 | pm-tui push/pull integration: argparse CLI dispatch, push_cli/pull_cli functions, progress callbacks in SyncEngine, config auto-persist, subprocess streaming, post-init auto-push | tui.py, config.py + ProjectRegistry copalvx_api.py, tui_app.py |
 | Part 3 | Dashboard TUI: rewrote tui.py as a terminal dashboard — health indicators, project list table, project detail (versions + delete), push/pull as secondary backup actions. Added get_health/list_projects/get_metadata/delete_project to api.py | tui.py, api.py |
+| QoL | Rename project: PATCH /projects/{name} server endpoint + rename_project() in api.py + confirm_rename() + [N] key in tui.py. Fixed delete 500 (FK ordering bug: must delete project first so CASCADE clears project_files before assets can be removed). do_push() no longer auto-increments version tag when server already has versions — tag prompt is blank, user types it. | main.py, api.py, tui.py |
+| QoL-pm | pm-tui project management: CopalVXRenameModal ([N]) renames CopalVX project + updates project.yaml; CopalVXDeleteModal ([X]) deletes from server; DeleteProjectModal ([D]) deletes PM project from registry, optional local folder deletion, optional CopalVX server deletion. _NNN folder suffix is now opt-in checkbox in InitScreen (was mandatory). Scrolling fixed: flattened ScrollableContainer(Vertical) → ScrollableContainer(id="detail-body") + height:1fr. Added rename_project()/delete_project() to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 
 ---
 
@@ -266,6 +268,7 @@ Do not change replication to `001` without adding a second volume server.
 |--------|------|---------|
 | POST | `/projects` | Create project (201/409) |
 | GET | `/projects` | List all projects with stats |
+| PATCH | `/projects/{name}` | Rename project (body: `{new_name: str}`; 404/409) |
 | GET | `/projects/{name}/versions` | List versions (newest first) |
 | GET | `/projects/{name}/metadata` | Project detail (includes `authors` list) |
 | DELETE | `/projects/{name}` | Delete project (body: `{delete_orphan_files: bool}`) |
@@ -311,7 +314,32 @@ Rewrote `client/tui.py` as a terminal dashboard:
 
 **Navigation:**
 - Dashboard: `[1-N]` open project → `[P]` push → `[L]` pull → `[R]` refresh → `[Q]` quit
-- Project detail: `[P]` push → `[L]` pull → `[D]` delete → `[B]` back
+- Project detail: `[P]` push → `[L]` pull → `[N]` rename → `[D]` delete → `[B]` back
+
+### QoL additions (COMPLETE)
+
+**CopalVX TUI (`client/tui.py`):**
+- `[N]ame` in project detail — renames a CopalVX project on the server; prompts for new name, calls `PATCH /projects/{name}`, updates display in-place
+- `do_push()` version tag prompt no longer auto-increments: when the project has existing versions, the prompt is blank and the user types the tag manually (latest version shown as context). New projects still default to `v1.0`.
+- Delete 500 fix: `DELETE /projects/{name}` now deletes the project row first (cascades → commits → project_files), then removes orphan assets. Previously tried to delete assets while project_files still held FK references.
+
+**pm-tui (`E:\Development\ProjectRegistry\src\project_registry\tui_app.py`):**
+
+Key bindings in `ProjectDetailScreen`:
+
+| Key | Action |
+|-----|--------|
+| `P` | Push to CopalVX |
+| `L` | Pull from CopalVX |
+| `N` | Rename CopalVX project (updates server + local project.yaml) |
+| `X` | Delete CopalVX project from server (optional orphan blob cleanup) |
+| `D` | Delete PM project: removes from registry, optional local folder delete, optional CopalVX server delete |
+| `T` | Start/stop time tracker |
+| `R` | Refresh |
+
+`InitScreen` new project form: `_NNN` folder suffix is now an opt-in `Checkbox` (unchecked by default). Previously appended `_001` to every project folder name.
+
+**Scrolling fix:** `ProjectDetailScreen` previously had `ScrollableContainer(Vertical(id="detail-body"))`. Setting `height: 1fr` on the outer container caused the inner `Vertical` to collapse to zero height — all content invisible. Fixed by flattening to `ScrollableContainer(id="detail-body")` and mounting content directly into the scroll container.
 
 ### Phase 7 — Authentication (LOW PRIORITY)
 
@@ -394,3 +422,7 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 10. **`call_from_thread()` is on `App`, not `Screen`.** In Textual, use `self.app.call_from_thread()` not `self.call_from_thread()` when calling from a background thread inside a Screen subclass.
 
 11. **`PYTHONUNBUFFERED=1` required for real-time subprocess streaming.** Without it, Python buffers stdout in a subprocess, so the parent can't read lines as they're printed. Set it in the subprocess env alongside `PYTHONIOENCODING`.
+
+12. **Textual `ScrollableContainer(Vertical(...))` with `height: 1fr` causes blank content.** When `height: 1fr` is set on the outer `ScrollableContainer`, the nested `Vertical` collapses to zero height because the parent already claims all space and the child has no explicit height. Fix: mount content directly into `ScrollableContainer(id="detail-body")` without a wrapping `Vertical`. The scroll container itself tracks virtual height as children are added.
+
+13. **`DELETE /projects/{name}` must delete the project row before orphan assets.** `project_files.asset_id` is a FK to `assets`. Trying to `DELETE FROM assets` while `project_files` still references them causes a FK violation (500). Delete the project first — the `ON DELETE CASCADE` chain clears commits → project_files — then delete orphan assets safely.
