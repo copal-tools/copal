@@ -71,3 +71,51 @@ def get_versions(project_name):
         return resp.json()
     except (ConnectionError, Timeout) as e:
         raise ConnectionError(f"Cannot reach server at {API_BASE}. Is it running?") from e
+
+
+def get_health():
+    """Returns health dict {healthy, services}. Raises ConnectionError if unreachable."""
+    try:
+        resp = requests.get(f"{API_BASE}/health", timeout=(5, 10))
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
+def list_projects():
+    """Returns list of project dicts from GET /projects."""
+    try:
+        resp = requests.get(f"{API_BASE}/projects", timeout=API_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
+def get_metadata(project_name):
+    """Returns metadata dict. Raises ValueError on 404, ConnectionError if unreachable."""
+    try:
+        resp = requests.get(f"{API_BASE}/projects/{project_name}/metadata", timeout=API_TIMEOUT)
+        if resp.status_code == 404:
+            raise ValueError(resp.json().get("detail", "Not found"))
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
+def delete_project(project_name, delete_orphan_files=False):
+    """Deletes a project. Returns response dict. Raises ValueError on 404."""
+    try:
+        resp = requests.delete(
+            f"{API_BASE}/projects/{project_name}",
+            json={"delete_orphan_files": delete_orphan_files},
+            timeout=(10, 60),
+        )
+        if resp.status_code == 404:
+            raise ValueError(f"Project '{project_name}' not found.")
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e

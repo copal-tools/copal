@@ -256,6 +256,7 @@ Do not change replication to `001` without adding a second volume server.
 | 8 | Cleanup: deleted legacy scripts (client_connect.py, checkout.py); blob verification in /confirm_upload (HEAD to SeaweedFS filer before DB insert); download re-hash (SHA-256 after write, delete+fail on mismatch); fixed tuple-unpacking bug in sync.py; CLI entry point (`uv run copalvx`) | main.py, transport.py, sync.py, pyproject.toml |
 | Part 1 | Server API additions: GET /health, GET /projects (with stats), DELETE /projects/{name} (with orphan cleanup), enhanced /metadata with authors list | main.py |
 | Part 2 | pm-tui push/pull integration: argparse CLI dispatch, push_cli/pull_cli functions, progress callbacks in SyncEngine, config auto-persist, subprocess streaming, post-init auto-push | tui.py, config.py + ProjectRegistry copalvx_api.py, tui_app.py |
+| Part 3 | Dashboard TUI: rewrote tui.py as a terminal dashboard — health indicators, project list table, project detail (versions + delete), push/pull as secondary backup actions. Added get_health/list_projects/get_metadata/delete_project to api.py | tui.py, api.py |
 
 ---
 
@@ -297,14 +298,20 @@ Added CopalVX push/pull to ProjectRegistry's TUI (`E:\Development\ProjectRegistr
 
 **Author handling:** pm-tui passes empty author to the subprocess. `push_cli` falls back to `default_author` from `~/.copal/config.json` (the actual user name), avoiding the earlier mistake of passing the PM project ID as the commit author.
 
-### Part 3 — CopalVX dashboard TUI (NOT STARTED)
+### Part 3 — CopalVX dashboard TUI (COMPLETE)
 
-Rewrite `client/tui.py` as a simple terminal dashboard:
-- System health indicators (API, DB, SeaweedFS)
-- Project list table (name, versions, last push, authors)
-- Project detail (versions, delete option)
-- Push/pull kept as secondary menu items (backup/standalone use)
-- Simple terminal style (not Textual), upgradeable later
+Rewrote `client/tui.py` as a terminal dashboard:
+- `show_dashboard()` — health bar (API/DB/SeaweedFS), project list table (name, latest version, version count, last push, author)
+- `show_project(name)` — metadata header (size, authors, message), full version list (capped at 15 + overflow)
+- `confirm_delete(name)` — two-step delete: orphan blob option + name confirmation
+- `do_push(preset_project=None)` / `do_pull(preset_project=None)` — interactive push/pull, accept preset project name from project detail screen
+- `push_cli` / `pull_cli` / `main()` / argparse dispatch — **unchanged** (pm-tui subprocess contract preserved)
+- ANSI colour (green/red/yellow/cyan) — auto-disabled when stdout is piped (`sys.stdout.isatty()`)
+- Added to `api.py`: `get_health()`, `list_projects()`, `get_metadata()`, `delete_project()`
+
+**Navigation:**
+- Dashboard: `[1-N]` open project → `[P]` push → `[L]` pull → `[R]` refresh → `[Q]` quit
+- Project detail: `[P]` push → `[L]` pull → `[D]` delete → `[B]` back
 
 ### Phase 7 — Authentication (LOW PRIORITY)
 

@@ -1,293 +1,479 @@
 import os
 import sys
 import getpass
+import shutil
 import time
 import subprocess
 import argparse
-from copal_core import fs, api, transport, versioning, registry
-from copal_core.config import SETTINGS
+from datetime import datetime
+
+from copal_core import fs, api, versioning, registry
+from copal_core.config import SETTINGS, API_BASE
 from copal_core.sync import SyncEngine
-# pm_hooks wires CopalVX push/pull events into the ProjectRegistry pm system.
-# All hooks are non-fatal — if pm tools are absent, CopalVX continues normally.
 from copal_core import pm_hooks
 
-def clear_screen():
-    subprocess.run(['cls' if os.name == 'nt' else 'clear'], shell=True, capture_output=True)
+# ── Colour helpers (disabled when stdout is not a tty, e.g. piped to pm-tui) ──
+_COLOUR = sys.stdout.isatty()
 
-def print_header():
-    clear_screen()
-    print("========================================")
-    print("   COPAL-VX  |  Asset Management TUI    ")
-    print("========================================")
-    print("")
+def _c(code, text):
+    return f"\033[{code}m{text}\033[0m" if _COLOUR else text
+
+green  = lambda t: _c("32", t)
+red    = lambda t: _c("31", t)
+yellow = lambda t: _c("33", t)
+cyan   = lambda t: _c("36", t)
+bold   = lambda t: _c("1",  t)
+dim    = lambda t: _c("2",  t)
+
+
+def svc_badge(s):
+    if s == "ok":       return green("OK")
+    if s == "degraded": return yellow("DEGRADED")
+    return red((s or "?").upper())
+
+
+# ── Formatting ─────────────────────────────────────────────────────────────────
+def fmt_date(iso_str, short=False):
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%Y-%m-%d") if short else dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso_str[:10]
+
+
+def fmt_size(b):
+    if b is None:
+        return "—"
+    if b == 0:
+        return "0 B"
+    for unit, div in [("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)]:
+        if b >= div:
+            return f"{b / div:.1f} {unit}"
+    return f"{b} B"
+
+
+def _tw():
+    return min(shutil.get_terminal_size((80, 24)).columns, 80)
+
+
+def _rule(char="─"):
+    print(char * _tw())
+
+
+# ── Screen helpers ─────────────────────────────────────────────────────────────
+def _clear():
+    subprocess.run(["cls" if os.name == "nt" else "clear"], shell=True, capture_output=True)
+
+
+def _header(subtitle="Asset Dashboard"):
+    _clear()
+    w = _tw()
+    print("=" * w)
+    print(bold(f"   COPAL-VX  |  {subtitle}"))
+    print("=" * w)
+    print()
+
 
 def print_progress(current, total, message):
-    """Simple text-based progress bar."""
-    percent = (current / total) * 100
-    bar_length = 30
-    filled_length = int(bar_length * current // total)
-    bar = '█' * filled_length + '-' * (bar_length - filled_length)
-    
-    # \r returns to start of line, allowing overwrite
-    sys.stdout.write(f"\r[{bar}] {percent:.1f}% | {message[:40]:<40}")
+    """Text progress bar used during push/pull operations."""
+    pct = (current / total * 100) if total else 0
+    filled = int(30 * current // max(total, 1))
+    bar = "█" * filled + "─" * (30 - filled)
+    sys.stdout.write(f"\r  [{bar}] {pct:.0f}%  {message[:38]:<38}")
     sys.stdout.flush()
 
-def do_push():
-    print_header()
-    print(">>> PUSH (UPLOAD) MODE")
-    
-    # --- 1. ASK FOR DIRECTORY FIRST ---
-    cwd = os.getcwd()
-    default_path = cwd
-    
-    # Load default root from config if exists
+
+# ── Dashboard (main screen) ────────────────────────────────────────────────────
+def show_dashboard():
+    while True:
+        _header("Asset Dashboard")
+
+        # Health status row
+        try:
+            h = api.get_health()
+            svc = h.get("services", {})
+            overall = green("HEALTHY") if h.get("healthy") else red("DEGRADED")
+            print(
+                f"  System: {overall}"
+                f"  |  API: {svc_badge(svc.get('api'))}"
+                f"  DB: {svc_badge(svc.get('database'))}"
+                f"  SeaweedFS: {svc_badge(svc.get('seaweedfs'))}"
+            )
+        except Exception:
+            print(f"  System: {red('UNREACHABLE')}  —  {dim(API_BASE)} not responding")
+
+        print(f"  Server:  {dim(API_BASE)}")
+        print()
+
+        # Project table
+        projects = []
+        try:
+            projects = api.list_projects()
+        except Exception as e:
+            print(f"  {red('Error fetching projects:')} {e}")
+
+        _rule()
+        if projects:
+            hdr = f"  {'#':>3}  {'Project':<22}  {'Latest':>7}  {'Vers':>4}  {'Last Push':<11}  Author"
+            print(bold(hdr))
+            _rule()
+            for i, p in enumerate(projects, 1):
+                name = (p["name"] or "")[:21]
+                ver  = (p["latest_version"] or "—")[:7]
+                vers = str(p["version_count"])
+                date = fmt_date(p["last_push"], short=True) if p["last_push"] else "—"
+                auth = (p["last_author"] or "—")[:14]
+                print(f"  {i:>3}  {name:<22}  {ver:>7}  {vers:>4}  {date:<11}  {auth}")
+            _rule()
+            print(f"  {len(projects)} project(s)")
+        else:
+            print(f"  {dim('No projects on server.')}")
+            _rule()
+
+        print()
+        print(
+            f"  {cyan('[1-N]')} Open  "
+            f"{cyan('[P]')}ush  "
+            f"{cyan('[L]')}ull  "
+            f"{cyan('[R]')}efresh  "
+            f"{cyan('[Q]')}uit"
+        )
+
+        choice = input("\n  > ").strip().lower()
+
+        if choice in ("q", "quit", "exit"):
+            print("Bye!")
+            sys.exit()
+        elif choice in ("r", ""):
+            continue
+        elif choice in ("p", "push"):
+            do_push()
+        elif choice in ("l", "pull"):
+            do_pull()
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if projects and 0 <= idx < len(projects):
+                show_project(projects[idx]["name"])
+            else:
+                print(f"  {red('Invalid selection.')}")
+                input("  Press Enter...")
+        else:
+            print(f"  {red(f'Unknown command: {choice!r}')}")
+            input("  Press Enter...")
+
+
+# ── Project detail ─────────────────────────────────────────────────────────────
+def show_project(name):
+    while True:
+        _header(f"Project: {name}")
+
+        # Metadata block
+        try:
+            meta = api.get_metadata(name)
+            size_str = fmt_size(meta.get("total_size_bytes"))
+            authors  = ", ".join(meta.get("authors", []))
+            print(f"  Latest:   {bold(meta['latest_version'])}   Size: {size_str}   Updated: {fmt_date(meta['updated_at'], short=True)}")
+            print(f"  Created:  {fmt_date(meta['created_at'], short=True)}   Authors: {authors}")
+            print(f"  Message:  {dim(meta.get('message', ''))}")
+        except ValueError as e:
+            print(f"  {yellow(str(e))}")
+        except Exception as e:
+            print(f"  {red('Metadata unavailable:')} {e}")
+
+        print()
+
+        # Version list
+        try:
+            versions = api.get_versions(name)
+            _rule()
+            print(f"  Versions  ({len(versions)} total)")
+            _rule()
+            if versions:
+                for i, v in enumerate(versions[:15]):
+                    suffix = cyan("  ← latest") if i == 0 else ""
+                    print(f"  {v}{suffix}")
+                if len(versions) > 15:
+                    print(f"  {dim(f'... and {len(versions) - 15} more')}")
+            else:
+                print(f"  {dim('No versions yet.')}")
+            _rule()
+        except Exception as e:
+            print(f"  {red('Could not load versions:')} {e}")
+
+        print()
+        print(
+            f"  {cyan('[P]')}ush  "
+            f"{cyan('[L]')}ull  "
+            f"{cyan('[D]')}elete  "
+            f"{cyan('[B]')}ack"
+        )
+
+        choice = input("\n  > ").strip().lower()
+
+        if choice in ("b", "back", ""):
+            return
+        elif choice in ("p", "push"):
+            do_push(preset_project=name)
+        elif choice in ("l", "pull"):
+            do_pull(preset_project=name)
+        elif choice in ("d", "delete"):
+            if confirm_delete(name):
+                return  # project gone; back to dashboard
+        else:
+            print(f"  {red(f'Unknown command: {choice!r}')}")
+            input("  Press Enter...")
+
+
+# ── Delete confirmation ────────────────────────────────────────────────────────
+def confirm_delete(name):
+    _header(f"Delete: {name}")
+    print(f"  {bold(red('WARNING:'))} Permanently deletes '{bold(name)}' and all version history.")
+    print(f"  This {bold('cannot be undone')}.")
+    print()
+
+    raw = input("  Also delete orphan blobs from storage? (y/n) [n]: ").strip().lower()
+    delete_orphans = raw == "y"
+    print()
+
+    confirm = input(f"  Type '{name}' to confirm: ").strip()
+    if confirm != name:
+        print(f"\n  {yellow('Cancelled.')} Name did not match.")
+        input("  Press Enter...")
+        return False
+
+    print(f"\n  Deleting '{name}'...")
+    try:
+        result = api.delete_project(name, delete_orphans)
+        blobs = result.get("orphan_blobs_deleted", 0)
+        msg = f"  {green('Deleted.')} Project removed."
+        if blobs:
+            msg += f" {blobs} blob(s) cleaned from storage."
+        print(msg)
+    except Exception as e:
+        print(f"  {red('Delete failed:')} {e}")
+        input("  Press Enter...")
+        return False
+
+    input("  Press Enter to return...")
+    return True
+
+
+# ── Interactive Push ───────────────────────────────────────────────────────────
+def do_push(preset_project=None):
+    _header("Push (Upload)")
+
+    # Source directory
+    default_path = os.getcwd()
     if SETTINGS.get("default_projects_root") and os.path.exists(SETTINGS["default_projects_root"]):
         default_path = SETTINGS["default_projects_root"]
 
-    path_input = input(f"Source Directory [Default: {default_path}]: ").strip()
-    
-    if not path_input:
-        root_dir = default_path
-    else:
-        # Sanitize Windows paths
-        root_dir = path_input.replace('"', '').replace("'", "")
-    
-    if not os.path.exists(root_dir):
-        print(f"❌ Error: Directory does not exist: {root_dir}")
-        input("Press Enter...")
-        return
-        
-    # --- 2. AUTO-DETECT PROJECT NAME ---
-    # Get the folder name (e.g., "MyMovie") from the path
-    folder_name = os.path.basename(os.path.normpath(root_dir))
-    
-    project = input(f"Project Name [Default: {folder_name}]: ").strip()
-    if not project:
-        project = folder_name # Use the default if user hit Enter
+    path_input = input(f"  Source directory [{default_path}]: ").strip()
+    root_dir = path_input.replace('"', '').replace("'", "") if path_input else default_path
 
-    # --- SMART VERSIONING ---
-    print("☁️  Checking remote versions...")
+    if not os.path.exists(root_dir):
+        print(f"  {red('Error:')} Directory does not exist: {root_dir}")
+        input("  Press Enter...")
+        return
+
+    # Project name
+    if preset_project:
+        project = preset_project
+        print(f"  Project: {bold(project)}")
+    else:
+        folder_name = os.path.basename(os.path.normpath(root_dir))
+        project = input(f"  Project name [{folder_name}]: ").strip() or folder_name
+
+    # Smart versioning
+    print("  Checking remote versions...")
     try:
         existing_tags = api.get_versions(project)
     except Exception as e:
-        print(f"❌ {e}")
-        input("Press Enter...")
+        print(f"  {red('Error:')} {e}")
+        input("  Press Enter...")
         return
 
     default_tag = "v1.0"
     if existing_tags:
-        latest = existing_tags[0] 
-        default_tag = versioning.increment_tag(latest)
-        print(f"ℹ️  Latest on server: {latest}")
+        default_tag = versioning.increment_tag(existing_tags[0])
+        print(f"  Latest on server: {existing_tags[0]}")
     else:
-        print("ℹ️  New Project (No remote versions found)")
+        print(f"  {dim('New project — no remote versions found.')}")
 
     while True:
-        tag_input = input(f"Version Tag [Default: {default_tag}]: ").strip()
-        
-        if not tag_input:
-            tag = default_tag
-        else:
-            tag = versioning.ensure_prefix(tag_input)
-            
-        is_valid, err_msg = versioning.validate_push_tag(tag, existing_tags)
-        if is_valid:
+        tag_input = input(f"  Version tag [{default_tag}]: ").strip()
+        tag = versioning.ensure_prefix(tag_input) if tag_input else default_tag
+        valid, err = versioning.validate_push_tag(tag, existing_tags)
+        if valid:
             break
-        print(f"❌ Error: {err_msg}")
-        
-    print(f"✅ Selected: {tag}")
+        print(f"  {red('Error:')} {err}")
 
-    # --- 3.5. VERIFY/CREATE PROJECT ---
-    print("🔍 Verifying project on server...")
+    print(f"  Tag: {bold(tag)}")
+
+    # Ensure project exists on server
     try:
         api.ensure_project(project)
     except Exception as e:
-        print(f"❌ Cannot confirm project: {e}")
-        input("Press Enter...")
+        print(f"  {red('Error:')} Cannot confirm project: {e}")
+        input("  Press Enter...")
         return
 
-    # --- 4. COMMIT MESSAGE ---
+    # Commit message & author
     default_msg = f"Update {tag}"
-    msg = input(f"Commit Message [Default: {default_msg}]: ").strip()
-    if not msg:
-        msg = default_msg
-        
+    msg    = input(f"  Commit message [{default_msg}]: ").strip() or default_msg
     author = SETTINGS.get("default_author", getpass.getuser())
 
-    # --- 5. EXECUTE ---
-    print(f"\n📂 Scanning: {root_dir}")
-    # Hook 1 (pre-push): flush any pending time sessions into project.yaml so
-    # time data is included in this push and available on other machines.
+    # Scan
+    print(f"\n  Scanning: {root_dir}")
     pm_hooks.hook_pre_push(root_dir)
     local_assets = fs.scan_directory(root_dir)
-    
+
     if not local_assets:
-        print("⚠️ No files found (or all files were ignored).")
-        input("Press Enter...")
+        print(f"  {yellow('No files found (or all ignored).')}")
+        input("  Press Enter...")
         return
 
-    print("\n🤝 Handshaking...")
+    # Handshake
+    print("  Handshaking with server...")
     try:
-        resp = api.handshake(project, local_assets)
+        resp  = api.handshake(project, local_assets)
         needed = set(resp.get("required_files", []))
     except Exception as e:
-        print(f"❌ Server Error: {e}")
-        input("Press Enter...")
+        print(f"  {red('Error:')} {e}")
+        input("  Press Enter...")
         return
 
-    # Upload Loop (Same as before)
+    # Upload
     if needed:
-        print(f"\n📦 Uploading {len(needed)} new files...")
+        print(f"\n  Uploading {len(needed)} new file(s)...")
         to_upload = [f for f in local_assets if f["path"] in needed]
-        
-        # Initialize Engine
-        engine = SyncEngine(max_threads=8)
-        
-        print("🚀 Starting Parallel Upload...")
-        
-        # Run Uploads
-        successful_uploads = engine.execute_upload_plan(to_upload, progress_callback=print_progress)
-        
-        print(f"\n✨ Uploads Finished. Success: {len(successful_uploads)}/{len(to_upload)}")
-        
-        if len(successful_uploads) != len(to_upload):
-            print("⚠️  Some files failed to upload. Aborting commit to protect integrity.")
-            input("Press Enter...")
+        engine    = SyncEngine(max_threads=8)
+        successful = engine.execute_upload_plan(to_upload, progress_callback=print_progress)
+        print(f"\n  Uploaded {len(successful)}/{len(to_upload)}")
+
+        if len(successful) != len(to_upload):
+            print(f"  {red('Some uploads failed. Aborting.')}")
+            input("  Press Enter...")
             return
 
-        # Confirm to DB (We can do this sequentially as it's just metadata, very fast)
-        print("📝 Confirming uploads to database...")
+        print("  Confirming to database...")
         try:
-            for item in successful_uploads:
-                api.confirm_upload(item['hash'], item['size'], item['fid'])
+            for item in successful:
+                api.confirm_upload(item["hash"], item["size"], item["fid"])
         except Exception as e:
-            print(f"❌ DB Error: {e}")
+            print(f"  {red('DB error:')} {e}")
+            input("  Press Enter...")
             return
     else:
-        print("\n⚡ All files exist on server. Skipping uploads.")
+        print(f"  {green('All files already on server.')} Nothing to upload.")
 
     # Commit
-    print("\n📝 Committing...")
+    print("  Committing...")
     try:
         api.commit(project, tag, msg, author, local_assets)
-        print(f"\n✅ SUCCESS! Project '{project}' version '{tag}' saved.")
         fs.save_local_state(root_dir, project, tag)
         registry.register_project(project, root_dir, tag)
-        # Hook 2 (post-push): stamp the copalvx block in project.yaml with the
-        # project name and version tag that was just successfully committed.
         pm_hooks.hook_post_push(root_dir, project, tag)
-        print("💾 Added to Recent Projects list.")
+        print(f"\n  {green('SUCCESS!')} '{project}' @ {bold(tag)} saved.")
     except Exception as e:
-        print(f"❌ Commit Failed: {e}")
+        print(f"  {red('Commit failed:')} {e}")
 
-    input("\nPress Enter to return to menu...")
+    input("\n  Press Enter to return...")
 
-def do_pull():
-    print_header()
-    print(">>> PULL (RESTORE) MODE")
-    
-    # 1. Inputs
-    project = input("Project Name: ").strip()
-    if not project: return
 
-    # --- SMART SELECTION MENU ---
-    print("☁️  Fetching history...")
+# ── Interactive Pull ───────────────────────────────────────────────────────────
+def do_pull(preset_project=None):
+    _header("Pull (Restore)")
+
+    # Project name
+    if preset_project:
+        project = preset_project
+        print(f"  Project: {bold(project)}")
+    else:
+        project = input("  Project name: ").strip()
+        if not project:
+            return
+
+    # Version selection
+    print("  Fetching versions...")
     try:
         versions = api.get_versions(project)
     except Exception as e:
-        print(f"❌ {e}")
-        input("Press Enter...")
+        print(f"  {red('Error:')} {e}")
+        input("  Press Enter...")
         return
 
     if not versions:
-        print("❌ No versions found for this project.")
-        input("Press Enter...")
+        print(f"  {red('No versions found for this project.')}")
+        input("  Press Enter...")
         return
 
-    print("\n--- Available Versions ---")
+    print()
+    _rule()
     for i, v in enumerate(versions[:10]):
-        label = " (Latest)" if i == 0 else ""
-        print(f"   {i+1}. {v}{label}")
-    print("--------------------------")
-    
+        suffix = "  (latest)" if i == 0 else ""
+        print(f"  {i + 1:>2}.  {v}{suffix}")
+    _rule()
+
     tag = ""
     while not tag:
-        choice = input(f"Select Version [1-{len(versions)}] or type 'latest': ").strip().lower()
-        
-        if choice in ["", "latest", "l"]:
+        choice = input(f"  Select [1-{min(len(versions), 10)}] or type tag [latest]: ").strip().lower()
+        if choice in ("", "latest", "l"):
             tag = versions[0]
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(versions):
                 tag = versions[idx]
             else:
-                print("❌ Invalid number.")
+                print(f"  {red('Invalid number.')}")
         else:
             tag = versioning.ensure_prefix(choice)
             if tag not in versions:
-                 print(f"⚠️  Warning: '{tag}' not found in history list. Trying anyway...")
+                print(f"  {yellow(f'Warning: {tag!r} not in history. Trying anyway...')}")
 
-    print(f"✅ Selected: {tag}")
-    
-    # Default to current folder + Project Name
-    cwd = os.getcwd()
-    default_target = os.path.join(cwd, project) if project else cwd
-    
-    target_dir_input = input(f"Target Directory [Default: {default_target}]: ").strip()
-    target_dir = target_dir_input if target_dir_input else default_target
-    
-    # --- NEW: Conflict Policy ---
-    print("\n[?] How should we handle existing files that differ from the server?")
-    print("    1. Backup (Rename local to .bak) [Default]")
-    print("    2. Overwrite (Destroy local changes)")
-    print("    3. Skip (Keep local changes)")
-    
-    policy_map = {"1": "backup", "2": "overwrite", "3": "skip"}
-    choice = input("Select Policy [1-3]: ").strip()
-    policy = policy_map.get(choice, "backup")
-    
-    if not project or not tag:
-        return
+    print(f"  Tag: {bold(tag)}")
 
-    # 2. Fetch Manifest
-    print("\n🌍 Fetching Manifest...")
+    # Target directory
+    default_target = os.path.join(os.getcwd(), project)
+    tdir_input = input(f"  Target directory [{default_target}]: ").strip()
+    target_dir = tdir_input if tdir_input else default_target
+
+    # Conflict policy
+    print()
+    print("  Conflict policy for changed files:")
+    print("    1. Backup (rename to .bak)  [default]")
+    print("    2. Overwrite")
+    print("    3. Skip (keep local)")
+    policy_choice = input("  Select [1-3]: ").strip()
+    policy = {"2": "overwrite", "3": "skip"}.get(policy_choice, "backup")
+
+    # Fetch manifest
+    print("\n  Fetching manifest...")
     try:
         manifest = api.get_manifest(project, tag)
         if not manifest:
-            print("❌ Project or Version not found.")
-            input("Press Enter...")
+            print(f"  {red('Version not found.')}")
+            input("  Press Enter...")
             return
     except Exception as e:
-        print(f"❌ Error: {e}")
-        input("Press Enter...")
+        print(f"  {red('Error:')} {e}")
+        input("  Press Enter...")
         return
 
     files = manifest.get("files", [])
-    print(f"📜 Manifest received: {len(files)} files.")
-    
-    # 3. Generate Plan
-    print("🧠 Analyzing filesystem (Smart Sync)...")
-    
-    # Initialize Engine with 8 threads (SSD optimized)
+    print(f"  Manifest: {len(files)} file(s).")
+
+    # Plan
+    print("  Analyzing filesystem...")
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
-    
-    # Run the math (Move detection, diff checks)
-    plan = engine.generate_plan(files, target_dir)
-    
-    # 4. Show Summary
-    counts = {"DOWNLOAD": 0, "LOCAL_COPY": 0, "SKIP": 0, "BACKUP": 0, "OVERWRITE": 0}
-    
+    plan   = engine.generate_plan(files, target_dir)
+
+    counts = {"DOWNLOAD": 0, "LOCAL_COPY": 0, "SKIP": 0, "BACKUP": 0}
     for task in plan:
         act = task["action"]
-        conflict = task.get("conflict_mode") # Check if there is a conflict action hidden here
-        
-        # Count Conflicts First
-        if conflict == "BACKUP" or act == "BACKUP":
+        if task.get("conflict_mode") == "BACKUP" or act == "BACKUP":
             counts["BACKUP"] += 1
-        elif conflict == "OVERWRITE" or act == "OVERWRITE":
-            counts["OVERWRITE"] += 1
-            
-        # Count Transport Method
         if act == "LOCAL_COPY":
             counts["LOCAL_COPY"] += 1
         elif act == "DOWNLOAD":
@@ -295,68 +481,41 @@ def do_pull():
         elif "SKIP" in act:
             counts["SKIP"] += 1
 
-    print("\n--- Sync Plan ---")
-    print(f"⬇️  Download:    {counts['DOWNLOAD']}")
-    print(f"📦 Local Copy:  {counts['LOCAL_COPY']} (Saved bandwidth!)")
-    print(f"🛡️  Backup:      {counts['BACKUP']}")
-    print(f"⏩ Skip:        {counts['SKIP']}")
-    print("-----------------")
-    
-    if input("Proceed? (Y/n): ").lower() == 'n':
-        print("Aborted.")
-        input("Press Enter...")
+    _rule()
+    print(f"  Download:    {counts['DOWNLOAD']}")
+    print(f"  Local copy:  {counts['LOCAL_COPY']}  (no bandwidth)")
+    print(f"  Backup:      {counts['BACKUP']}")
+    print(f"  Skip:        {counts['SKIP']}")
+    _rule()
+
+    if input("  Proceed? (Y/n): ").strip().lower() == "n":
+        print("  Aborted.")
+        input("  Press Enter...")
         return
 
-    # 5. Execute in Parallel
-    print("\n🚀 Starting Sync...")
-    start_time = time.time()
-    
-    # Pass the callback for the progress bar
+    # Execute
+    print("\n  Syncing...")
+    t0      = time.time()
     results = engine.execute_plan(plan, progress_callback=print_progress)
-    
-    duration = time.time() - start_time
-    print(f"\n\n✨ Complete in {duration:.2f}s.")
-    print(f"✅ Success: {results['success']} | ❌ Fail: {results['fail']} | ⏩ Skipped: {results['skip']}")
-    
-    # Save state so we remember this project
+    elapsed = time.time() - t0
+    print(f"\n\n  Done in {elapsed:.1f}s.")
+    print(f"  Success: {results['success']}  Fail: {results['fail']}  Skipped: {results['skip']}")
+
     fs.save_local_state(target_dir, project, tag)
     registry.register_project(project, target_dir, tag)
-    # Hooks 3 & 4 (post-pull): register the project in the pm registry so
-    # `pm list` and `project` CWD detection work, then display the CopalVX
-    # block from the pulled project.yaml to confirm project identity.
     pm_hooks.hook_post_pull(target_dir, project, tag)
 
-    input("\nPress Enter to return to menu...")
+    input("\n  Press Enter to return...")
 
-def main_menu():
-    while True:
-        print_header()
-        print(f"Server: {transport.FILER_BASE}")
-        print("----------------------------------------")
-        print("1. Push (Upload current folder)")
-        print("2. Pull (Restore version)")
-        print("3. Exit")
-        print("----------------------------------------")
-        choice = input("Select Option: ").strip().lower()
 
-        if choice in ("1", "push", "p"):
-            do_push()
-        elif choice in ("2", "pull"):
-            do_pull()
-        elif choice in ("3", "exit", "q", "quit"):
-            print("Bye!")
-            sys.exit()
-        else:
-            print(f"❌ '{choice}' is not a valid option. Type 1, 2, or 3.")
-            input("Press Enter to continue...")
-
+# ── CLI (non-interactive, called by pm-tui via subprocess) ────────────────────
 def push_cli(project, tag, path, message=None, author=None):
     """Non-interactive push — all params provided, exits 0 on success, 1 on failure."""
     if not os.path.exists(path):
         print(f"Error: Path does not exist: {path}", file=sys.stderr)
         sys.exit(1)
 
-    author = author or SETTINGS.get("default_author", getpass.getuser())
+    author  = author or SETTINGS.get("default_author", getpass.getuser())
     message = message or f"Update {tag}"
 
     print(f"[CopalVX] Push: {project} @ {tag}")
@@ -377,7 +536,7 @@ def push_cli(project, tag, path, message=None, author=None):
 
     print("Handshaking with server...")
     try:
-        resp = api.handshake(project, local_assets)
+        resp  = api.handshake(project, local_assets)
         needed = set(resp.get("required_files", []))
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -386,7 +545,7 @@ def push_cli(project, tag, path, message=None, author=None):
     if needed:
         print(f"Uploading {len(needed)} new files...")
         to_upload = [f for f in local_assets if f["path"] in needed]
-        engine = SyncEngine(max_threads=8)
+        engine    = SyncEngine(max_threads=8)
 
         def _upload_progress(done, total, msg):
             print(f"[UPLOAD] {done}/{total} {msg}", flush=True)
@@ -437,7 +596,7 @@ def pull_cli(project, tag, target, policy="backup"):
     print(f"Manifest: {len(files)} files. Analyzing...")
 
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
-    plan = engine.generate_plan(files, target)
+    plan   = engine.generate_plan(files, target)
 
     def _download_progress(done, total, msg):
         print(f"[DOWNLOAD] {done}/{total} {msg}", flush=True)
@@ -458,6 +617,7 @@ def pull_cli(project, tag, target, policy="backup"):
         sys.exit(1)
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(prog="copalvx", add_help=False)
     subparsers = parser.add_subparsers(dest="command")
@@ -483,7 +643,7 @@ def main():
         pull_cli(args.project, args.tag, args.target, args.policy)
     else:
         try:
-            main_menu()
+            show_dashboard()
         except KeyboardInterrupt:
             print("\nExiting...")
 

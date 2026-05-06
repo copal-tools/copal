@@ -1,3 +1,4 @@
+import getpass
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ DEFAULT_CONFIG = {
     "server_ip": "192.168.178.161",
     "api_port": 8005,
     "filer_port": 8888,
-    "default_author": os.getenv("USERNAME", "artist"),
+    "default_author": getpass.getuser(),
     "default_projects_root": "",
 }
 
