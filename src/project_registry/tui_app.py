@@ -18,7 +18,7 @@ from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical, Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
-    Button, DataTable, Footer, Header, Input, Label,
+    Button, Checkbox, DataTable, Footer, Header, Input, Label,
     ProgressBar, RadioButton, RadioSet, RichLog, Rule, Select, Static,
 )
 
@@ -266,6 +266,7 @@ class InitScreen(Screen):
                     yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input")
                 yield Label("Project folder", classes="field-label")
                 yield Input(id="dir-input")
+                yield Checkbox("Append _NNN suffix to folder name", id="inc-check")
                 with Horizontal(id="init-buttons"):
                     yield Button("Create", variant="primary", id="btn-create")
                     yield Button("Cancel", variant="default", id="btn-cancel")
@@ -326,8 +327,11 @@ class InitScreen(Screen):
             collaborators = None
 
         try:
-            pid, root = compute_id_and_path(name, base_dir, use_increment=True)
-            root.mkdir(parents=True, exist_ok=True)
+            use_inc = self.query_one("#inc-check", Checkbox).value
+            pid, root = compute_id_and_path(name, base_dir, use_increment=use_inc)
+            if not use_inc and root.exists():
+                raise ValueError(f"Folder '{root.name}' already exists.")
+            root.mkdir(parents=True, exist_ok=use_inc)
             for d in ["01_Intake", "02_Workfiles", "03_Exports"]:
                 (root / d).mkdir(exist_ok=True)
 
@@ -556,13 +560,101 @@ class CopalVXProgressModal(ModalScreen):
         self.query_one("#cvx-progress-hint", Static).update("[dim]Esc to close[/dim]")
 
 
+class CopalVXRenameModal(ModalScreen):
+    """Prompt for a new CopalVX project name."""
+
+    DEFAULT_CSS = """
+    CopalVXRenameModal { align: center middle; }
+    #cvx-rename-box {
+        width: 56;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #cvx-rename-hint { margin-top: 1; color: $text-muted; }
+    """
+
+    def __init__(self, project_name: str) -> None:
+        super().__init__()
+        self._project_name = project_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cvx-rename-box"):
+            yield Label(f"[bold]Rename:[/bold] {self._project_name}")
+            yield Rule()
+            yield Label("New name:")
+            yield Input(placeholder="New CopalVX project name", id="new-name-input")
+            yield Static("[dim]Enter to rename  •  Esc to cancel[/dim]", id="cvx-rename-hint")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        new_name = event.value.strip()
+        if new_name:
+            self.dismiss(new_name)
+
+
+class CopalVXDeleteModal(ModalScreen):
+    """Confirm deletion of a CopalVX project from the server."""
+
+    DEFAULT_CSS = """
+    CopalVXDeleteModal { align: center middle; }
+    #cvx-delete-box {
+        width: 56;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $error;
+    }
+    #cvx-delete-warning { color: $warning; margin-bottom: 1; }
+    #cvx-delete-buttons { margin-top: 1; height: auto; }
+    #cvx-delete-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, project_name: str) -> None:
+        super().__init__()
+        self._project_name = project_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cvx-delete-box"):
+            yield Label(f"[bold red]Delete from server:[/bold red] {self._project_name}",
+                        id="cvx-delete-warning")
+            yield Rule()
+            yield Static("Removes all version history. Cannot be undone.")
+            yield Checkbox("Also delete orphan blobs from storage", id="orphan-check")
+            with Horizontal(id="cvx-delete-buttons"):
+                yield Button("Delete", variant="error",   id="btn-confirm-delete")
+                yield Button("Cancel", variant="default", id="btn-cancel-delete")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel-delete":
+            self.dismiss(None)
+        elif event.button.id == "btn-confirm-delete":
+            orphans = self.query_one("#orphan-check", Checkbox).value
+            self.dismiss({"delete_orphans": orphans})
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+
 class ProjectDetailScreen(Screen):
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Back"),
-        Binding("t",      "toggle_timer",   "Start/stop timer", priority=True),
-        Binding("p",      "push_copalvx",   "Push"),
-        Binding("l",      "pull_copalvx",   "Pull"),
-        Binding("r",      "refresh",        "Refresh"),
+        Binding("escape", "app.pop_screen",  "Back"),
+        Binding("t",      "toggle_timer",    "Start/stop timer", priority=True),
+        Binding("p",      "push_copalvx",    "Push"),
+        Binding("l",      "pull_copalvx",    "Pull"),
+        Binding("n",      "rename_copalvx",  "Rename"),
+        Binding("x",      "delete_copalvx",  "Delete"),
+        Binding("r",      "refresh",         "Refresh"),
     ]
 
     def __init__(self, project: dict, auto_push: bool = False) -> None:
@@ -835,6 +927,56 @@ class ProjectDetailScreen(Screen):
             CopalVXPullModal(project_name, versions, project_path),
             on_confirm,
         )
+
+    def _update_cvx_project_name(self, new_name: str) -> None:
+        """Update copalvx.project_name in project.yaml after a server rename."""
+        yaml_path = Path(self._project.get("path", "")) / "project.yaml"
+        if not yaml_path.exists():
+            return
+        try:
+            record = load_project_yaml(yaml_path)
+            if "copalvx" not in record:
+                record["copalvx"] = {}
+            record["copalvx"]["project_name"] = new_name
+            yaml_path.write_text(
+                _YAML_HEADER + yaml.dump(
+                    record, default_flow_style=False, allow_unicode=True, sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # best-effort; non-fatal
+
+    def action_rename_copalvx(self) -> None:
+        project_name = self._cvx_project_name()
+
+        def on_confirm(new_name: str | None) -> None:
+            if not new_name or new_name == project_name:
+                return
+            try:
+                copalvx_api.rename_project(project_name, new_name)
+                self._update_cvx_project_name(new_name)
+                self.notify(f"Renamed to '{new_name}'", title="CopalVX")
+                self._refresh_data()
+            except Exception as e:
+                self.notify(str(e), title="Rename failed", severity="error")
+
+        self.app.push_screen(CopalVXRenameModal(project_name), on_confirm)
+
+    def action_delete_copalvx(self) -> None:
+        project_name = self._cvx_project_name()
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+            try:
+                copalvx_api.delete_project(project_name, result.get("delete_orphans", False))
+                self.notify(f"'{project_name}' deleted from server.", title="CopalVX")
+                self._refresh_data()
+            except Exception as e:
+                self.notify(str(e), title="Delete failed", severity="error")
+
+        self.app.push_screen(CopalVXDeleteModal(project_name), on_confirm)
 
 
 # ── App ────────────────────────────────────────────────────────────────────────

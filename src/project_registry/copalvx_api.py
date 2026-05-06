@@ -89,6 +89,38 @@ def _popen(cmd: list[str], cwd: str | None) -> subprocess.Popen:
     )
 
 
+def rename_project(old_name: str, new_name: str) -> None:
+    """Renames a CopalVX project on the server. Raises RuntimeError on failure."""
+    url  = f"{_base_url()}/projects/{old_name}"
+    data = json.dumps({"new_name": new_name}).encode("utf-8")
+    req  = urllib.request.Request(
+        url, data=data, method="PATCH",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Rename failed ({e.code}): {body}")
+
+
+def delete_project(project_name: str, delete_orphan_files: bool = False) -> dict:
+    """Deletes a CopalVX project from the server. Raises RuntimeError on failure."""
+    url  = f"{_base_url()}/projects/{project_name}"
+    data = json.dumps({"delete_orphan_files": delete_orphan_files}).encode("utf-8")
+    req  = urllib.request.Request(
+        url, data=data, method="DELETE",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Delete failed ({e.code}): {body}")
+
+
 def run_push(project: str, tag: str, path: str, message: str = "", author: str = "") -> subprocess.Popen:
     """Starts a non-interactive push subprocess. Returns the Popen object."""
     args = ["push", project, tag, path]
