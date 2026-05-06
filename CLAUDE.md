@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-06 (after QoL additions: rename, delete fix, pm-tui project management).
+> Last updated: 2026-05-07 (after QoL-pm-2: template system, form scrolling fixes, CVX update indicator).
 
 ---
 
@@ -259,6 +259,7 @@ Do not change replication to `001` without adding a second volume server.
 | Part 3 | Dashboard TUI: rewrote tui.py as a terminal dashboard — health indicators, project list table, project detail (versions + delete), push/pull as secondary backup actions. Added get_health/list_projects/get_metadata/delete_project to api.py | tui.py, api.py |
 | QoL | Rename project: PATCH /projects/{name} server endpoint + rename_project() in api.py + confirm_rename() + [N] key in tui.py. Fixed delete 500 (FK ordering bug: must delete project first so CASCADE clears project_files before assets can be removed). do_push() no longer auto-increments version tag when server already has versions — tag prompt is blank, user types it. | main.py, api.py, tui.py |
 | QoL-pm | pm-tui project management: CopalVXRenameModal ([N]) renames CopalVX project + updates project.yaml; CopalVXDeleteModal ([X]) deletes from server; DeleteProjectModal ([D]) deletes PM project from registry, optional local folder deletion, optional CopalVX server deletion. _NNN folder suffix is now opt-in checkbox in InitScreen (was mandatory). Scrolling fixed: flattened ScrollableContainer(Vertical) → ScrollableContainer(id="detail-body") + height:1fr. Added rename_project()/delete_project() to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
+| QoL-pm-2 | Template system: user-defined templates stored in templates.json (DATA_DIR). Each template defines preset metadata + folder structure. TemplateScreen ([T] from dashboard) with [N]/[E]/[D] for full CRUD. EditTemplateModal for create/edit. InitScreen RadioSet built dynamically from loaded templates; _do_create() reads folder list from template (supports nested paths). Form scrolling fixed for InitScreen and EditTemplateModal (inner ScrollableContainer with max-height: 55vh, buttons outside scroll area). CVX update indicator: dashboard background-polls CopalVX server every 60s for each project's latest version; shows yellow "↑ vX.Y" in name cell when server version differs from local project.yaml last_push_version. | ProjectRegistry config.py, pm.py, tui_app.py |
 
 ---
 
@@ -340,6 +341,51 @@ Key bindings in `ProjectDetailScreen`:
 `InitScreen` new project form: `_NNN` folder suffix is now an opt-in `Checkbox` (unchecked by default). Previously appended `_001` to every project folder name.
 
 **Scrolling fix:** `ProjectDetailScreen` previously had `ScrollableContainer(Vertical(id="detail-body"))`. Setting `height: 1fr` on the outer container caused the inner `Vertical` to collapse to zero height — all content invisible. Fixed by flattening to `ScrollableContainer(id="detail-body")` and mounting content directly into the scroll container.
+
+### QoL-pm-2 additions (COMPLETE, 2026-05-07)
+
+**Template system (`E:\Development\ProjectRegistry`):**
+- Storage: `templates.json` in `DATA_DIR` (`%APPDATA%/project-registry/` on Windows)
+- `config.py`: `TEMPLATES_FILE` path constant
+- `pm.py`: `DEFAULT_TEMPLATES` list (Tactical + Digital Signage, each with `folders` list), `load_templates()` (seeds defaults on first run), `save_templates()`
+- `tui_app.py` — `TemplateScreen`: DataTable with [N] new / [E] edit / [D] delete; `EditTemplateModal`: form with name, type, category, client, director, producer, folders (comma-separated input; supports nested paths like `02_Workfiles/Houdini`); `DashboardScreen [T]` opens templates; `InitScreen` builds RadioSet dynamically from `load_templates()` — adding/editing a template is reflected immediately next time New Project is opened
+- Folder creation uses `parents=True` so templates can define nested subdirectories
+
+**Form scrolling fix (`InitScreen` + `EditTemplateModal`):**
+- Same root cause as the earlier `ProjectDetailScreen` fix: `ScrollableContainer(Vertical(...))` collapses inner widget
+- Pattern for scrollable centered forms: outer styled box (`Vertical(id="box")`) is the direct child of the Screen; a flat `ScrollableContainer(id="scroll")` lives inside it wrapping form fields; buttons stay outside the scroll container; CSS: `#scroll { max-height: 55vh; }` (bounds the scroll area without fixing the outer box height)
+
+**CVX update indicator (`DashboardScreen`):**
+- `_dashboard_rows()` now includes `cvx_name` and `cvx_local_version` from each project's `project.yaml`
+- `_cvx_latest: dict[str, str | None]` cached on the class — maps CopalVX project name → latest server version
+- `_fetch_cvx_versions()` runs in a daemon thread; calls `copalvx_api.get_versions()` (8s timeout, swallows errors) for each project with a CVX name; on completion calls `_rebuild_table()` via `call_from_thread()`
+- Polling: on mount (initial) + every 60s via `set_interval`; `[R]` refresh also triggers a poll immediately
+- Display: `_rebuild_table()` checks `server_ver != local_ver`; if true, appends `[yellow]↑ vX.Y[/yellow]` to the project name cell. No indicator if server is offline, project has no CVX name, or versions match.
+
+**Dashboard bindings summary (current):**
+
+| Key | Screen | Action |
+|-----|--------|--------|
+| `N` | Dashboard | New project |
+| `T` | Dashboard | Manage templates |
+| `R` | Dashboard | Refresh (data + CVX poll) |
+| `Q` | Dashboard | Quit |
+| `P` | Project detail | Push to CopalVX |
+| `L` | Project detail | Pull from CopalVX |
+| `N` | Project detail | Rename CopalVX project |
+| `X` | Project detail | Delete from CopalVX server |
+| `D` | Project detail | Delete PM project |
+| `T` | Project detail | Start/stop time tracker |
+| `R` | Project detail | Refresh |
+
+**TemplateScreen bindings:**
+
+| Key | Action |
+|-----|--------|
+| `N` | New template |
+| `E` | Edit selected template |
+| `D` | Delete selected template |
+| `Esc` | Back to dashboard |
 
 ### Phase 7 — Authentication (LOW PRIORITY)
 
@@ -426,3 +472,7 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 12. **Textual `ScrollableContainer(Vertical(...))` with `height: 1fr` causes blank content.** When `height: 1fr` is set on the outer `ScrollableContainer`, the nested `Vertical` collapses to zero height because the parent already claims all space and the child has no explicit height. Fix: mount content directly into `ScrollableContainer(id="detail-body")` without a wrapping `Vertical`. The scroll container itself tracks virtual height as children are added.
 
 13. **`DELETE /projects/{name}` must delete the project row before orphan assets.** `project_files.asset_id` is a FK to `assets`. Trying to `DELETE FROM assets` while `project_files` still references them causes a FK violation (500). Delete the project first — the `ON DELETE CASCADE` chain clears commits → project_files — then delete orphan assets safely.
+
+14. **Scrollable centered forms: put `ScrollableContainer` inside the styled box, not outside.** The pattern `ScrollableContainer(Vertical(id="box"))` collapses the inner `Vertical` to zero height. The correct pattern: `Vertical(id="box")` as the direct child of the Screen (centered via `align: center middle`), with a flat `ScrollableContainer(id="scroll", max-height: 55vh)` inside it containing the form fields. Buttons go below the scroll container, outside it. The outer box stays `height: auto` and only grows to fit title + scroll area + buttons.
+
+15. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** `DashboardScreen` is the root screen and never gets popped, so holding a reference to `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
