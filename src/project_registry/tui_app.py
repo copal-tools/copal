@@ -7,6 +7,7 @@ Screens:
 """
 
 import json
+import shutil
 import threading
 import urllib.request
 import yaml
@@ -26,7 +27,7 @@ from project_registry.config import DATA_DIR
 from project_registry import copalvx_api
 from project_registry.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
-    days_ago, fmt_h, load_project_yaml, load_registry,
+    days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
     QUICK_PRESETS, upsert_registry,
 )
 
@@ -560,6 +561,66 @@ class CopalVXProgressModal(ModalScreen):
         self.query_one("#cvx-progress-hint", Static).update("[dim]Esc to close[/dim]")
 
 
+class DeleteProjectModal(ModalScreen):
+    """Confirm deletion of a ProjectRegistry project, with optional folder + server cleanup."""
+
+    DEFAULT_CSS = """
+    DeleteProjectModal { align: center middle; }
+    #del-proj-box {
+        width: 60;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $error;
+    }
+    #del-proj-warning { color: $warning; margin-bottom: 1; }
+    #del-proj-buttons { margin-top: 1; height: auto; }
+    #del-proj-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, project_name: str, cvx_project_name: str | None) -> None:
+        super().__init__()
+        self._project_name     = project_name
+        self._cvx_project_name = cvx_project_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="del-proj-box"):
+            yield Label(f"[bold red]Delete project:[/bold red] {self._project_name}",
+                        id="del-proj-warning")
+            yield Rule()
+            yield Static("Removes the project from the registry.")
+            yield Checkbox("Also delete local folder", id="del-folder-check")
+            if self._cvx_project_name:
+                yield Rule()
+                yield Static(f"[dim]CopalVX: {self._cvx_project_name}[/dim]")
+                yield Checkbox("Also delete from CopalVX server", id="del-cvx-check")
+                yield Checkbox("  Include orphan blobs",          id="del-blobs-check")
+            with Horizontal(id="del-proj-buttons"):
+                yield Button("Delete", variant="error",   id="btn-del-confirm")
+                yield Button("Cancel", variant="default", id="btn-del-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-del-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-del-confirm":
+            delete_folder = self.query_one("#del-folder-check", Checkbox).value
+            delete_cvx    = False
+            delete_blobs  = False
+            if self._cvx_project_name:
+                delete_cvx   = self.query_one("#del-cvx-check",   Checkbox).value
+                delete_blobs = self.query_one("#del-blobs-check", Checkbox).value
+            self.dismiss({
+                "delete_folder": delete_folder,
+                "delete_cvx":    delete_cvx,
+                "delete_blobs":  delete_blobs,
+            })
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+
 class CopalVXRenameModal(ModalScreen):
     """Prompt for a new CopalVX project name."""
 
@@ -652,8 +713,9 @@ class ProjectDetailScreen(Screen):
         Binding("t",      "toggle_timer",    "Start/stop timer", priority=True),
         Binding("p",      "push_copalvx",    "Push"),
         Binding("l",      "pull_copalvx",    "Pull"),
-        Binding("n",      "rename_copalvx",  "Rename"),
-        Binding("x",      "delete_copalvx",  "Delete"),
+        Binding("n",      "rename_copalvx",  "Rename CVX"),
+        Binding("x",      "delete_copalvx",  "Delete CVX"),
+        Binding("d",      "delete_project",  "Delete project"),
         Binding("r",      "refresh",         "Refresh"),
     ]
 
@@ -977,6 +1039,48 @@ class ProjectDetailScreen(Screen):
                 self.notify(str(e), title="Delete failed", severity="error")
 
         self.app.push_screen(CopalVXDeleteModal(project_name), on_confirm)
+
+    def action_delete_project(self) -> None:
+        project_id   = self._data.get("id")
+        project_name = self._data.get("name", project_id)
+        cvx_name     = self._data.get("copalvx", {}).get("project_name") or None
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+
+            errors = []
+
+            # CopalVX server delete first — if it fails, local data is still intact
+            if result.get("delete_cvx") and cvx_name:
+                try:
+                    copalvx_api.delete_project(cvx_name, result.get("delete_blobs", False))
+                except Exception as e:
+                    errors.append(f"CopalVX: {e}")
+
+            # Remove from local registry
+            save_registry([p for p in load_registry() if p.get("id") != project_id])
+
+            # Delete local folder
+            if result.get("delete_folder"):
+                try:
+                    path = Path(self._project.get("path", ""))
+                    if path.exists():
+                        shutil.rmtree(path)
+                except Exception as e:
+                    errors.append(f"Folder: {e}")
+
+            if errors:
+                self.notify("\n".join(errors), title="Partial delete", severity="warning")
+            else:
+                self.notify(f"'{project_name}' deleted.", title="Project deleted")
+
+            self.app.pop_screen()
+
+        self.app.push_screen(
+            DeleteProjectModal(project_name, cvx_name),
+            on_confirm,
+        )
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
