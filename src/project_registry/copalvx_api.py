@@ -1,6 +1,8 @@
 """CopalVX integration for pm-tui: version fetching and subprocess push/pull."""
 import json
 import os
+import platform
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -45,24 +47,39 @@ def health() -> dict:
         return {"healthy": False, "services": {}}
 
 
-def run_push(project: str, tag: str, path: str, message: str = "", author: str = "") -> subprocess.Popen:
-    """Starts a non-interactive push subprocess. Returns the Popen object."""
+def _resolve_copalvx(subcmd_args: list[str]) -> tuple[list[str], str | None]:
+    """Return (full command list, cwd-or-None) for running copalvx.
+
+    Strategy:
+      1. If `copalvx` is on PATH (e.g. installed via `uv tool install .`), run it
+         directly — no cwd required.
+      2. Otherwise fall back to `uv run copalvx` from client_path (dev setup).
+      3. If neither is available, raise a helpful RuntimeError.
+    """
+    if shutil.which("copalvx"):
+        return ["copalvx"] + subcmd_args, None
+
     client_dir = _client_path()
-    if not client_dir:
-        raise RuntimeError(
-            "Add \"client_path\": \"<path-to-CopalVX-client>\" to ~/.copal/config.json"
-        )
+    if client_dir:
+        return ["uv", "run", "copalvx"] + subcmd_args, client_dir
 
-    cmd = ["uv", "run", "copalvx", "push", project, tag, path]
-    if message:
-        cmd += ["--message", message]
-    if author:
-        cmd += ["--author", author]
+    if platform.system() == "Windows":
+        example = r"C:\Users\You\Development\Copal-VX\client"
+    else:
+        example = "/Users/you/Development/Copal-VX/client"
 
+    raise RuntimeError(
+        "CopalVX not found. Fix one of:\n"
+        f"  A) Install as a tool: cd <client-dir> && uv tool install .\n"
+        f"  B) Add to ~/.copal/config.json: \"client_path\": \"{example}\""
+    )
+
+
+def _popen(cmd: list[str], cwd: str | None) -> subprocess.Popen:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(
         cmd,
-        cwd=client_dir,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
@@ -70,26 +87,21 @@ def run_push(project: str, tag: str, path: str, message: str = "", author: str =
         encoding="utf-8",
         env=env,
     )
+
+
+def run_push(project: str, tag: str, path: str, message: str = "", author: str = "") -> subprocess.Popen:
+    """Starts a non-interactive push subprocess. Returns the Popen object."""
+    args = ["push", project, tag, path]
+    if message:
+        args += ["--message", message]
+    if author:
+        args += ["--author", author]
+    cmd, cwd = _resolve_copalvx(args)
+    return _popen(cmd, cwd)
 
 
 def run_pull(project: str, tag: str, target: str, policy: str = "backup") -> subprocess.Popen:
     """Starts a non-interactive pull subprocess. Returns the Popen object."""
-    client_dir = _client_path()
-    if not client_dir:
-        raise RuntimeError(
-            "Add \"client_path\": \"<path-to-CopalVX-client>\" to ~/.copal/config.json"
-        )
-
-    cmd = ["uv", "run", "copalvx", "pull", project, tag, target, "--policy", policy]
-
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
-    return subprocess.Popen(
-        cmd,
-        cwd=client_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
+    args = ["pull", project, tag, target, "--policy", policy]
+    cmd, cwd = _resolve_copalvx(args)
+    return _popen(cmd, cwd)
