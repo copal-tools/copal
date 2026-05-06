@@ -348,7 +348,7 @@ class InitScreen(Screen):
 
             project_info = {"id": pid, "name": name, "path": str(root)}
             self.app.pop_screen()
-            self.app.push_screen(ProjectDetailScreen(project_info))
+            self.app.push_screen(ProjectDetailScreen(project_info, auto_push=True))
 
         except Exception as e:
             self.notify(str(e), title="Create failed", severity="error")
@@ -431,12 +431,10 @@ class CopalVXPushModal(ModalScreen):
     #cvx-modal-hint { margin-top: 1; color: $text-muted; }
     """
 
-    def __init__(self, project_name: str, suggested_tag: str, project_path: str, author: str) -> None:
+    def __init__(self, project_name: str, suggested_tag: str) -> None:
         super().__init__()
         self._project_name = project_name
         self._suggested_tag = suggested_tag
-        self._project_path  = project_path
-        self._author        = author
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cvx-modal-box"):
@@ -567,10 +565,11 @@ class ProjectDetailScreen(Screen):
         Binding("r",      "refresh",        "Refresh"),
     ]
 
-    def __init__(self, project: dict) -> None:
+    def __init__(self, project: dict, auto_push: bool = False) -> None:
         super().__init__()
         self._project = project
         self._data: dict = {}
+        self._auto_push = auto_push
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -580,6 +579,28 @@ class ProjectDetailScreen(Screen):
     def on_mount(self) -> None:
         self._refresh_data()
         self.set_interval(1, self._tick_timer)
+        if self._auto_push:
+            self._auto_push = False
+            self.set_timer(0.3, self._do_auto_push)
+
+    def _do_auto_push(self) -> None:
+        """Push v1.0 automatically after project init."""
+        project_name = self._cvx_project_name()
+        project_path = self._project.get("path", "")
+        tag = "v1.0"
+
+        progress = CopalVXProgressModal(f"Push: {project_name} @ {tag}")
+        self.app.push_screen(progress)
+
+        def _run():
+            try:
+                proc = copalvx_api.run_push(project_name, tag, project_path, "Initial version", "")
+                self._cvx_stream_subprocess(proc, progress)
+            except Exception as e:
+                self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                self.app.call_from_thread(progress.mark_done, False)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _refresh_data(self) -> None:
         self._data = _detail_data(self._project)
@@ -755,7 +776,6 @@ class ProjectDetailScreen(Screen):
     def action_push_copalvx(self) -> None:
         project_name = self._cvx_project_name()
         project_path = self._project.get("path", "")
-        author       = self._data.get("id", "")
 
         versions     = copalvx_api.get_versions(project_name)
         suggested    = self._cvx_next_tag(versions)
@@ -771,7 +791,7 @@ class ProjectDetailScreen(Screen):
 
             def _run():
                 try:
-                    proc = copalvx_api.run_push(project_name, tag, project_path, msg, author)
+                    proc = copalvx_api.run_push(project_name, tag, project_path, msg, "")
                     self._cvx_stream_subprocess(proc, progress)
                 except Exception as e:
                     self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
@@ -780,7 +800,7 @@ class ProjectDetailScreen(Screen):
             threading.Thread(target=_run, daemon=True).start()
 
         self.app.push_screen(
-            CopalVXPushModal(project_name, suggested, project_path, author),
+            CopalVXPushModal(project_name, suggested),
             on_confirm,
         )
 

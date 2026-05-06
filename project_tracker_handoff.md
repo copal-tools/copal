@@ -487,6 +487,11 @@ ProjectRegistry's TUI (`pm-tui`) is the **primary interface** for pushing/pullin
 | `_cvx_stream_subprocess()` | Thread helper: reads stdout line-by-line, parses `[UPLOAD]`/`[DOWNLOAD]` progress lines |
 | `action_push_copalvx()` | Keybinding `p` — fetches versions, suggests next tag, runs push |
 | `action_pull_copalvx()` | Keybinding `l` — fetches versions, user selects, runs pull |
+| `_do_auto_push()` | Triggered on mount when `auto_push=True` — pushes v1.0 with progress modal |
+
+### Post-init auto-push
+
+When `InitScreen._do_create()` creates a new project, it passes `auto_push=True` to `ProjectDetailScreen`. On mount (after a 0.3s delay for the screen to render), `_do_auto_push()` fires, pushing "v1.0" with message "Initial version" to CopalVX. The author is left empty so `push_cli` uses `default_author` from `~/.copal/config.json`.
 
 ### Prerequisites
 
