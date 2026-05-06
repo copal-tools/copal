@@ -20,4 +20,5 @@ DATA_DIR     = get_data_dir()
 REGISTRY     = DATA_DIR / "registry.json"
 SESSIONS_LOG = DATA_DIR / "sessions.jsonl"
 SESSION_FILE = DATA_DIR / "current_session.json"
-CONFIG_FILE  = DATA_DIR / "config.json"
+CONFIG_FILE    = DATA_DIR / "config.json"
+TEMPLATES_FILE = DATA_DIR / "templates.json"

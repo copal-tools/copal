@@ -28,7 +28,7 @@ from project_registry import copalvx_api
 from project_registry.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
-    QUICK_PRESETS, upsert_registry,
+    load_templates, save_templates, upsert_registry,
 )
 
 
@@ -97,15 +97,18 @@ def _dashboard_rows() -> list[dict]:
             d          = delivs[-1]
             last_deliv = f"{d.get('name','?')} ({days_ago(d.get('delivered_at',''))})"
 
+        cvx = record.get("copalvx") or {}
         rows.append({
-            "id":            pid,
-            "name":          entry.get("name", pid),
-            "phase":         phase,
-            "total_sec":     total_sec,
-            "time_str":      fmt_h(total_sec) if total_sec else "—",
-            "deadline":      deadline,
-            "last_delivery": last_deliv,
-            "path":          str(path),
+            "id":                pid,
+            "name":              entry.get("name", pid),
+            "phase":             phase,
+            "total_sec":         total_sec,
+            "time_str":          fmt_h(total_sec) if total_sec else "—",
+            "deadline":          deadline,
+            "last_delivery":     last_deliv,
+            "path":              str(path),
+            "cvx_name":          cvx.get("project_name"),
+            "cvx_local_version": cvx.get("last_push_version"),
         })
     return rows
 
@@ -218,6 +221,9 @@ class InitScreen(Screen):
         color: $text-muted;
         margin-top: 1;
     }
+    #init-scroll {
+        max-height: 55vh;
+    }
     #init-buttons {
         margin-top: 1;
         height: auto;
@@ -229,20 +235,20 @@ class InitScreen(Screen):
 
     def __init__(self) -> None:
         super().__init__()
-        self._preset_index = 0  # 0=Custom, 1=Tactical, 2=DS
+        self._preset_index = 0  # 0=Custom, 1..N=template index
+        self._templates    = load_templates()
 
     def compose(self) -> ComposeResult:
-        with ScrollableContainer():
-            with Vertical(id="init-box"):
-                yield Label("[bold]New Project[/bold]")
-                yield Rule()
+        with Vertical(id="init-box"):
+            yield Label("[bold]New Project[/bold]")
+            yield Rule()
+            with ScrollableContainer(id="init-scroll"):
                 yield Label("Name *", classes="field-label")
                 yield Input(placeholder="Project name", id="name-input")
                 yield Label("Preset", classes="field-label")
                 yield RadioSet(
                     RadioButton("Custom"),
-                    RadioButton("Tactical"),
-                    RadioButton("Digital Signage"),
+                    *[RadioButton(t["name"]) for t in self._templates],
                     id="preset-radio",
                 )
                 with Vertical(id="custom-fields"):
@@ -268,9 +274,9 @@ class InitScreen(Screen):
                 yield Label("Project folder", classes="field-label")
                 yield Input(id="dir-input")
                 yield Checkbox("Append _NNN suffix to folder name", id="inc-check")
-                with Horizontal(id="init-buttons"):
-                    yield Button("Create", variant="primary", id="btn-create")
-                    yield Button("Cancel", variant="default", id="btn-cancel")
+            with Horizontal(id="init-buttons"):
+                yield Button("Create", variant="primary", id="btn-create")
+                yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
         self.query_one("#dir-input", Input).value = self._default_dir()
@@ -306,19 +312,7 @@ class InitScreen(Screen):
         base_dir = Path(self.query_one("#dir-input", Input).value.strip() or self._default_dir())
 
         idx = self._preset_index
-        if idx == 1:
-            p             = QUICK_PRESETS["tactical"]
-            proj_type     = p["type"];    category      = p["category"]
-            client        = p["client"];  director      = p["director"]
-            producer      = p["producer"]; collaborators = p["collaborators"]
-            deadline      = None
-        elif idx == 2:
-            p             = QUICK_PRESETS["ds"]
-            proj_type     = p["type"];    category      = p["category"]
-            client        = p["client"];  director      = p["director"]
-            producer      = p["producer"]; collaborators = p["collaborators"]
-            deadline      = None
-        else:
+        if idx == 0:  # Custom
             proj_type     = self.query_one("#type-select",     Select).value
             category      = self.query_one("#category-select", Select).value
             client        = self.query_one("#client-input",    Input).value.strip() or None
@@ -326,6 +320,17 @@ class InitScreen(Screen):
             producer      = self.query_one("#producer-input",  Input).value.strip() or None
             deadline      = self.query_one("#deadline-input",  Input).value.strip() or None
             collaborators = None
+            folders       = ["01_Intake", "02_Workfiles", "03_Exports"]
+        else:
+            tmpl          = self._templates[idx - 1]
+            proj_type     = tmpl.get("type", "tlc")
+            category      = tmpl.get("category", "tvc")
+            client        = tmpl.get("client")
+            director      = tmpl.get("director")
+            producer      = tmpl.get("producer")
+            collaborators = tmpl.get("collaborators", [])
+            deadline      = None
+            folders       = tmpl.get("folders", ["01_Intake", "02_Workfiles", "03_Exports"])
 
         try:
             use_inc = self.query_one("#inc-check", Checkbox).value
@@ -333,8 +338,8 @@ class InitScreen(Screen):
             if not use_inc and root.exists():
                 raise ValueError(f"Folder '{root.name}' already exists.")
             root.mkdir(parents=True, exist_ok=use_inc)
-            for d in ["01_Intake", "02_Workfiles", "03_Exports"]:
-                (root / d).mkdir(exist_ok=True)
+            for d in folders:
+                (root / d).mkdir(parents=True, exist_ok=True)
 
             record    = build_project_record(
                 pid, name, proj_type, category,
@@ -361,12 +366,14 @@ class InitScreen(Screen):
 
 class DashboardScreen(Screen):
     BINDINGS = [
-        Binding("n", "new_project", "New project"),
-        Binding("r", "refresh",     "Refresh"),
-        Binding("q", "app.quit",    "Quit"),
+        Binding("n", "new_project",      "New project"),
+        Binding("t", "manage_templates", "Templates"),
+        Binding("r", "refresh",          "Refresh"),
+        Binding("q", "app.quit",         "Quit"),
     ]
 
     _rows: list[dict] = []
+    _cvx_latest: dict[str, str | None] = {}  # {cvx_project_name: latest_server_version}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -374,29 +381,63 @@ class DashboardScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        table              = self.query_one(DataTable)
-        table.cursor_type  = "row"
+        table             = self.query_one(DataTable)
+        table.cursor_type = "row"
         table.add_columns("Name", "Phase", "Time", "Deadline", "Last delivery")
         self._refresh_data()
         self.set_interval(1,  self._tick_timer)
         self.set_interval(30, self._refresh_data)
+        self.set_interval(60, self._poll_cvx_versions)
+        threading.Thread(target=self._fetch_cvx_versions, daemon=True).start()
 
     def _refresh_data(self) -> None:
-        self._rows   = _dashboard_rows()
-        table        = self.query_one(DataTable)
-        session      = _active_session()
-        active_pid   = session.get("project_id") if session else None
+        self._rows = _dashboard_rows()
+        self._rebuild_table()
+
+    def _rebuild_table(self) -> None:
+        """Repopulate the DataTable from cached rows and CVX version data."""
+        table      = self.query_one(DataTable)
+        session    = _active_session()
+        active_pid = session.get("project_id") if session else None
         table.clear()
         for row in self._rows:
-            marker = "● " if row["id"] == active_pid else "  "
+            cvx_name   = row.get("cvx_name")
+            local_ver  = row.get("cvx_local_version")
+            server_ver = self._cvx_latest.get(cvx_name) if cvx_name else None
+            has_update = bool(server_ver and server_ver != local_ver)
+
+            marker    = "● " if row["id"] == active_pid else "  "
+            name_cell = row["name"]
+            if has_update:
+                name_cell = f"{row['name']} [yellow]↑ {server_ver}[/yellow]"
+
             table.add_row(
-                marker + row["name"],
+                marker + name_cell,
                 row["phase"],
                 row["time_str"],
                 row["deadline"],
                 row["last_delivery"],
                 key=row["id"],
             )
+
+    def _poll_cvx_versions(self) -> None:
+        threading.Thread(target=self._fetch_cvx_versions, daemon=True).start()
+
+    def _fetch_cvx_versions(self) -> None:
+        """Background: query the CopalVX server for each project's latest version."""
+        result: dict[str, str | None] = {}
+        for entry in load_registry():
+            yaml_path = Path(entry.get("path", "")) / "project.yaml"
+            if not yaml_path.exists():
+                continue
+            record   = load_project_yaml(yaml_path)
+            cvx_name = (record.get("copalvx") or {}).get("project_name")
+            if not cvx_name:
+                continue
+            versions        = copalvx_api.get_versions(cvx_name)
+            result[cvx_name] = versions[0] if versions else None
+        self._cvx_latest = result
+        self.app.call_from_thread(self._rebuild_table)
 
     def _tick_timer(self) -> None:
         session = _active_session()
@@ -410,6 +451,7 @@ class DashboardScreen(Screen):
 
     def action_refresh(self) -> None:
         self._refresh_data()
+        self._poll_cvx_versions()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         pid     = event.row_key.value
@@ -419,6 +461,9 @@ class DashboardScreen(Screen):
 
     def action_new_project(self) -> None:
         self.app.push_screen(InitScreen())
+
+    def action_manage_templates(self) -> None:
+        self.app.push_screen(TemplateScreen())
 
 
 class CopalVXPushModal(ModalScreen):
@@ -705,6 +750,182 @@ class CopalVXDeleteModal(ModalScreen):
         if event.key == "escape":
             self.dismiss(None)
             event.stop()
+
+
+class EditTemplateModal(ModalScreen):
+    """Create or edit a project template."""
+
+    DEFAULT_CSS = """
+    EditTemplateModal { align: center middle; }
+    #tmpl-edit-box {
+        width: 64;
+        height: auto;
+        max-height: 90vh;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #tmpl-edit-box .field-label { color: $text-muted; margin-top: 1; }
+    #tmpl-edit-scroll { max-height: 55vh; }
+    #tmpl-edit-buttons { margin-top: 1; height: auto; }
+    #tmpl-edit-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, template: dict | None = None) -> None:
+        super().__init__()
+        self._template = template or {}
+        self._is_new   = template is None
+
+    def compose(self) -> ComposeResult:
+        title = "[bold]New Template[/bold]" if self._is_new else "[bold]Edit Template[/bold]"
+        with Vertical(id="tmpl-edit-box"):
+            yield Label(title)
+            yield Rule()
+            with ScrollableContainer(id="tmpl-edit-scroll"):
+                yield Label("Name *", classes="field-label")
+                yield Input(value=self._template.get("name", ""), placeholder="Template name", id="tmpl-name")
+                yield Label("Type", classes="field-label")
+                yield Select(
+                    [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
+                    value=self._template.get("type", "tlc"), allow_blank=False, id="tmpl-type",
+                )
+                yield Label("Category", classes="field-label")
+                yield Select(
+                    [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
+                     ("B2B", "b2b"), ("Digital", "digital")],
+                    value=self._template.get("category", "tvc"), allow_blank=False, id="tmpl-category",
+                )
+                yield Label("Client", classes="field-label")
+                yield Input(value=self._template.get("client") or "", placeholder="e.g. Public", id="tmpl-client")
+                yield Label("Director", classes="field-label")
+                yield Input(value=self._template.get("director") or "", placeholder="e.g.  (optional)", id="tmpl-director")
+                yield Label("Producer", classes="field-label")
+                yield Input(value=self._template.get("producer") or "", placeholder="e.g.  (optional)", id="tmpl-producer")
+                yield Label("Folders (comma-separated)", classes="field-label")
+                default_folders = "01_Intake, 02_Workfiles, 03_Exports"
+                folders_val = ", ".join(self._template.get("folders", [])) or default_folders
+                yield Input(value=folders_val, placeholder=default_folders, id="tmpl-folders")
+            with Horizontal(id="tmpl-edit-buttons"):
+                yield Button("Save", variant="primary", id="btn-tmpl-save")
+                yield Button("Cancel", variant="default", id="btn-tmpl-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#tmpl-name", Input).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-tmpl-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-tmpl-save":
+            name = self.query_one("#tmpl-name", Input).value.strip()
+            if not name:
+                self.notify("Name is required.", severity="error")
+                self.query_one("#tmpl-name", Input).focus()
+                return
+            raw     = self.query_one("#tmpl-folders", Input).value
+            folders = [f.strip() for f in raw.split(",") if f.strip()]
+            if not folders:
+                folders = ["01_Intake", "02_Workfiles", "03_Exports"]
+            self.dismiss({
+                "name":          name,
+                "type":          self.query_one("#tmpl-type",     Select).value,
+                "category":      self.query_one("#tmpl-category", Select).value,
+                "client":        self.query_one("#tmpl-client",   Input).value.strip() or None,
+                "director":      self.query_one("#tmpl-director", Input).value.strip() or None,
+                "producer":      self.query_one("#tmpl-producer", Input).value.strip() or None,
+                "collaborators": self._template.get("collaborators", []),
+                "folders":       folders,
+            })
+
+
+class TemplateScreen(Screen):
+    """Manage project templates."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Back"),
+        Binding("n",      "new_template",    "New"),
+        Binding("e",      "edit_template",   "Edit"),
+        Binding("d",      "delete_template", "Delete"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._templates: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield DataTable(id="tmpl-table")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.cursor_type = "row"
+        table.add_columns("Name", "Type", "Category", "Client", "Folders")
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self._templates = load_templates()
+        table           = self.query_one(DataTable)
+        table.clear()
+        for i, t in enumerate(self._templates):
+            folders_str = ", ".join(t.get("folders", []))
+            table.add_row(
+                t.get("name", "—"),
+                t.get("type", "—"),
+                t.get("category", "—"),
+                t.get("client") or "—",
+                folders_str,
+                key=str(i),
+            )
+
+    def _selected_index(self) -> int | None:
+        table = self.query_one(DataTable)
+        key   = table.cursor_row_key
+        if key is None:
+            return None
+        try:
+            return int(key.value)
+        except Exception:
+            return None
+
+    def action_new_template(self) -> None:
+        def on_result(t: dict | None) -> None:
+            if t is None:
+                return
+            self._templates.append(t)
+            save_templates(self._templates)
+            self._refresh()
+
+        self.app.push_screen(EditTemplateModal(), on_result)
+
+    def action_edit_template(self) -> None:
+        idx = self._selected_index()
+        if idx is None or idx >= len(self._templates):
+            return
+        template = self._templates[idx].copy()
+
+        def on_result(t: dict | None) -> None:
+            if t is None:
+                return
+            self._templates[idx] = t
+            save_templates(self._templates)
+            self._refresh()
+
+        self.app.push_screen(EditTemplateModal(template), on_result)
+
+    def action_delete_template(self) -> None:
+        idx = self._selected_index()
+        if idx is None or idx >= len(self._templates):
+            return
+        name = self._templates[idx].get("name", "?")
+        del self._templates[idx]
+        save_templates(self._templates)
+        self._refresh()
+        self.notify(f"Template '{name}' deleted.")
 
 
 class ProjectDetailScreen(Screen):

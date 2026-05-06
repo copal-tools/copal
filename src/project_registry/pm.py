@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from project_registry.config import DATA_DIR, REGISTRY, SESSIONS_LOG
+from project_registry.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
 
 
 DATA = DATA_DIR
@@ -110,6 +110,50 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
         if val in choices:
             return val
         print(f"    Please enter one of: {options}")
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+DEFAULT_TEMPLATES: list[dict] = [
+    {
+        "name":          "Tactical",
+        "type":          "tlc",
+        "category":      "tvc",
+        "client":        "Public",
+        "director":      "",
+        "producer":      "",
+        "collaborators": [{"name": "", "role": "audio"}],
+        "folders":       ["01_Intake", "02_Workfiles", "03_Exports"],
+    },
+    {
+        "name":          "Digital Signage",
+        "type":          "tlc",
+        "category":      "digital-signage",
+        "client":        "Public",
+        "director":      None,
+        "producer":      None,
+        "collaborators": [],
+        "folders":       ["01_Intake", "02_Workfiles", "03_Exports"],
+    },
+]
+
+
+def load_templates() -> list[dict]:
+    """Load templates from disk; seed defaults on first run."""
+    if TEMPLATES_FILE.exists():
+        try:
+            return json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return list(DEFAULT_TEMPLATES)
+    save_templates(DEFAULT_TEMPLATES)
+    return list(DEFAULT_TEMPLATES)
+
+
+def save_templates(templates: list[dict]) -> None:
+    TEMPLATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TEMPLATES_FILE.write_text(
+        json.dumps(templates, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 # ── Quick-init presets ─────────────────────────────────────────────────────────
