@@ -617,10 +617,102 @@ def pull_cli(project, tag, target, policy="backup"):
         sys.exit(1)
 
 
+# ── First-run setup ───────────────────────────────────────────────────────────
+def setup_cli():
+    """Interactive setup — creates/updates ~/.copal/config.json then tests connection."""
+    import json
+    import requests as _req
+    from pathlib import Path
+
+    _header("Setup")
+
+    cfg_path = Path.home() / ".copal" / "config.json"
+
+    # Load existing config so we can show current values as defaults
+    existing = {}
+    if cfg_path.exists():
+        try:
+            existing = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            print(f"  Updating config: {dim(str(cfg_path))}")
+            print(f"  Press Enter to keep each current value.\n")
+        except Exception:
+            print(f"  {yellow('Existing config unreadable')} — starting fresh.\n")
+    else:
+        print(f"  No config found — will create {dim(str(cfg_path))}\n")
+
+    def ask(label, key, fallback):
+        current = existing.get(key, fallback)
+        val = input(f"  {label:<22} [{current}]: ").strip()
+        return val if val else str(current)
+
+    def ask_int(label, key, fallback):
+        while True:
+            raw = ask(label, key, fallback)
+            try:
+                return int(raw)
+            except ValueError:
+                print(f"  {red('Must be a whole number.')}")
+
+    server_ip  = ask    ("Server IP",     "server_ip",             "192.168.178.161")
+    api_port   = ask_int("API port",      "api_port",              8005)
+    filer_port = ask_int("Filer port",    "filer_port",            8888)
+    author     = ask    ("Author",         "default_author",        getpass.getuser())
+    proj_root  = ask    ("Projects root", "default_projects_root",
+                         existing.get("default_projects_root") or str(Path.home() / "Projects"))
+
+    new_cfg = {
+        "server_ip":             server_ip,
+        "api_port":              api_port,
+        "filer_port":            filer_port,
+        "default_author":        author,
+        "default_projects_root": proj_root,
+    }
+
+    # Preserve any extra keys the user may have set manually (e.g. client_path)
+    for k, v in existing.items():
+        if k not in new_cfg:
+            new_cfg[k] = v
+
+    # Test connection using the values just entered, not the stale imported config
+    print()
+    print("  Testing connection...")
+    try:
+        r   = _req.get(f"http://{server_ip}:{api_port}/health", timeout=(5, 10))
+        r.raise_for_status()
+        h   = r.json()
+        svc = h.get("services", {})
+        overall = green("HEALTHY") if h.get("healthy") else red("DEGRADED")
+        print(
+            f"  {overall}"
+            f"  |  API: {svc_badge(svc.get('api'))}"
+            f"  DB: {svc_badge(svc.get('database'))}"
+            f"  SeaweedFS: {svc_badge(svc.get('seaweedfs'))}"
+        )
+    except Exception as e:
+        print(f"  {yellow('Warning:')} Could not reach server — {e}")
+        print(f"  Config will be saved anyway. Verify server_ip / api_port if unexpected.")
+
+    # Write config
+    print()
+    try:
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(new_cfg, indent=4), encoding="utf-8")
+        print(f"  {green('Done.')} Config written to {dim(str(cfg_path))}")
+    except Exception as e:
+        print(f"  {red('Error:')} Could not write config — {e}")
+        sys.exit(1)
+
+    print()
+    print(f"  Run {cyan('copalvx')} to open the dashboard.")
+    print()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(prog="copalvx", add_help=False)
     subparsers = parser.add_subparsers(dest="command")
+
+    subparsers.add_parser("setup")
 
     push_p = subparsers.add_parser("push")
     push_p.add_argument("project")
@@ -637,7 +729,9 @@ def main():
 
     args, _ = parser.parse_known_args()
 
-    if args.command == "push":
+    if args.command == "setup":
+        setup_cli()
+    elif args.command == "push":
         push_cli(args.project, args.tag, args.path, args.message, args.author)
     elif args.command == "pull":
         pull_cli(args.project, args.tag, args.target, args.policy)
