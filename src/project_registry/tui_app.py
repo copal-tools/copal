@@ -733,6 +733,7 @@ class ProjectDetailScreen(Screen):
     def on_mount(self) -> None:
         self._refresh_data()
         self.set_interval(1, self._tick_timer)
+        self.query_one(ScrollableContainer).focus()
         if self._auto_push:
             self._auto_push = False
             self.set_timer(0.3, self._do_auto_push)
@@ -1092,6 +1093,9 @@ class PMApp(App):
         background: $surface;
     }
     DataTable {
+        height: 1fr;
+    }
+    ProjectDetailScreen ScrollableContainer {
         height: 1fr;
     }
     .section-title {
