@@ -90,6 +90,9 @@ class CreateProjectRequest(BaseModel):
 class DeleteProjectRequest(BaseModel):
     delete_orphan_files: bool = False
 
+class RenameProjectRequest(BaseModel):
+    new_name: str
+
 
 # --- ENDPOINTS ---
 
@@ -435,6 +438,30 @@ def list_projects(db: Session = Depends(get_db)):
     ]
 
 
+@app.patch("/projects/{project_name}")
+def rename_project(project_name: str, request: RenameProjectRequest, db: Session = Depends(get_db)):
+    logger.info("Renaming project: %s -> %s", project_name, request.new_name)
+    try:
+        result = db.execute(
+            text("UPDATE projects SET name = :new_name WHERE name = :old_name RETURNING id"),
+            {"new_name": request.new_name, "old_name": project_name}
+        )
+        if not result.fetchone():
+            raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
+        db.commit()
+        return {"status": "renamed", "old_name": project_name, "new_name": request.new_name}
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Project '{request.new_name}' already exists.")
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("Rename '%s' failed: %s", project_name, e)
+        raise HTTPException(status_code=500, detail="Rename failed.")
+
+
 @app.delete("/projects/{project_name}")
 def delete_project(project_name: str, request: DeleteProjectRequest, db: Session = Depends(get_db)):
     logger.info("Deleting project: %s (orphan cleanup: %s)", project_name, request.delete_orphan_files)
@@ -449,6 +476,7 @@ def delete_project(project_name: str, request: DeleteProjectRequest, db: Session
 
     project_id = project[0]
 
+    # Collect orphan FIDs before any deletions (project_files still exist for the query)
     orphan_fids = []
     if request.delete_orphan_files:
         orphan_fids = [r[0] for r in db.execute(text("""
@@ -465,13 +493,16 @@ def delete_project(project_name: str, request: DeleteProjectRequest, db: Session
             )
         """), {"pid": project_id}).fetchall()]
 
-        if orphan_fids:
-            db.execute(
-                text("DELETE FROM assets WHERE seaweed_fid IN :fids"),
-                {"fids": tuple(orphan_fids)}
-            )
-
+    # Delete project first — cascades to commits → project_files, freeing asset FK refs
     db.execute(text("DELETE FROM projects WHERE id = :pid"), {"pid": project_id})
+
+    # Now safe to delete orphan assets (project_files no longer reference them)
+    if orphan_fids:
+        db.execute(
+            text("DELETE FROM assets WHERE seaweed_fid IN :fids"),
+            {"fids": tuple(orphan_fids)}
+        )
+
     db.commit()
 
     deleted_blobs = 0

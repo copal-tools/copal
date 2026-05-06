@@ -206,6 +206,7 @@ def show_project(name):
         print(
             f"  {cyan('[P]')}ush  "
             f"{cyan('[L]')}ull  "
+            f"{cyan('[N]')}ame  "
             f"{cyan('[D]')}elete  "
             f"{cyan('[B]')}ack"
         )
@@ -218,12 +219,42 @@ def show_project(name):
             do_push(preset_project=name)
         elif choice in ("l", "pull"):
             do_pull(preset_project=name)
+        elif choice in ("n", "name", "rename"):
+            new_name = confirm_rename(name)
+            if new_name:
+                name = new_name
         elif choice in ("d", "delete"):
             if confirm_delete(name):
                 return  # project gone; back to dashboard
         else:
             print(f"  {red(f'Unknown command: {choice!r}')}")
             input("  Press Enter...")
+
+
+# ── Rename confirmation ────────────────────────────────────────────────────────
+def confirm_rename(name):
+    """Returns new name on success, None on cancel."""
+    _header(f"Rename: {name}")
+    print(f"  Current name: {bold(name)}")
+    print()
+
+    new_name = input("  New name (blank to cancel): ").strip()
+    if not new_name or new_name == name:
+        print(f"\n  {yellow('Cancelled.')}")
+        input("  Press Enter...")
+        return None
+
+    print(f"\n  Renaming '{bold(name)}' → '{bold(new_name)}'...")
+    try:
+        api.rename_project(name, new_name)
+        print(f"  {green('Renamed successfully.')}")
+    except (ValueError, Exception) as e:
+        print(f"  {red('Rename failed:')} {e}")
+        input("  Press Enter...")
+        return None
+
+    input("  Press Enter to continue...")
+    return new_name
 
 
 # ── Delete confirmation ────────────────────────────────────────────────────────

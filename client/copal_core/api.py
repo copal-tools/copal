@@ -105,6 +105,24 @@ def get_metadata(project_name):
         raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
 
 
+def rename_project(old_name, new_name):
+    """Renames a project. Raises ValueError on 404/409, ConnectionError if unreachable."""
+    try:
+        resp = requests.patch(
+            f"{API_BASE}/projects/{old_name}",
+            json={"new_name": new_name},
+            timeout=API_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            raise ValueError(f"Project '{old_name}' not found.")
+        if resp.status_code == 409:
+            raise ValueError(f"Project '{new_name}' already exists.")
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
 def delete_project(project_name, delete_orphan_files=False):
     """Deletes a project. Returns response dict. Raises ValueError on 404."""
     try:
