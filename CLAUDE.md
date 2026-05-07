@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-07 (after QoL-pm-2: template system, form scrolling fixes, CVX update indicator).
+> Last updated: 2026-05-07 (after dashboard redesign: ProjectRow widget, search, server projects, open-folder).
 
 ---
 
@@ -260,6 +260,7 @@ Do not change replication to `001` without adding a second volume server.
 | QoL | Rename project: PATCH /projects/{name} server endpoint + rename_project() in api.py + confirm_rename() + [N] key in tui.py. Fixed delete 500 (FK ordering bug: must delete project first so CASCADE clears project_files before assets can be removed). do_push() no longer auto-increments version tag when server already has versions — tag prompt is blank, user types it. | main.py, api.py, tui.py |
 | QoL-pm | pm-tui project management: CopalVXRenameModal ([N]) renames CopalVX project + updates project.yaml; CopalVXDeleteModal ([X]) deletes from server; DeleteProjectModal ([D]) deletes PM project from registry, optional local folder deletion, optional CopalVX server deletion. _NNN folder suffix is now opt-in checkbox in InitScreen (was mandatory). Scrolling fixed: flattened ScrollableContainer(Vertical) → ScrollableContainer(id="detail-body") + height:1fr. Added rename_project()/delete_project() to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 | QoL-pm-2 | Template system: user-defined templates stored in templates.json (DATA_DIR). Each template defines preset metadata + folder structure. TemplateScreen ([T] from dashboard) with [N]/[E]/[D] for full CRUD. EditTemplateModal for create/edit. InitScreen RadioSet built dynamically from loaded templates; _do_create() reads folder list from template (supports nested paths). Form scrolling fixed for InitScreen and EditTemplateModal (inner ScrollableContainer with max-height: 55vh, buttons outside scroll area). CVX update indicator: dashboard background-polls CopalVX server every 60s for each project's latest version; shows yellow "↑ vX.Y" in name cell when server version differs from local project.yaml last_push_version. | ProjectRegistry config.py, pm.py, tui_app.py |
+| Dashboard redesign | Replaced DataTable with scrollable list of ProjectRow widgets (height 3). Each row shows project name, Open Folder button, ▲ push, ▼ pull buttons. Server-only CVX projects shown greyed out below a Rule separator (▼ pull only). Search Input filters by name/ID in real-time; Checkbox toggles server project inclusion. Arrow-key navigation between rows, Enter opens detail. Push/pull work directly from dashboard rows. _cvx_next_tag() and _cvx_stream() extracted to module-level; list_projects() added to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 
 ---
 
@@ -356,36 +357,79 @@ Key bindings in `ProjectDetailScreen`:
 - Pattern for scrollable centered forms: outer styled box (`Vertical(id="box")`) is the direct child of the Screen; a flat `ScrollableContainer(id="scroll")` lives inside it wrapping form fields; buttons stay outside the scroll container; CSS: `#scroll { max-height: 55vh; }` (bounds the scroll area without fixing the outer box height)
 
 **CVX update indicator (`DashboardScreen`):**
-- `_dashboard_rows()` now includes `cvx_name` and `cvx_local_version` from each project's `project.yaml`
-- `_cvx_latest: dict[str, str | None]` cached on the class — maps CopalVX project name → latest server version
-- `_fetch_cvx_versions()` runs in a daemon thread; calls `copalvx_api.get_versions()` (8s timeout, swallows errors) for each project with a CVX name; on completion calls `_rebuild_table()` via `call_from_thread()`
-- Polling: on mount (initial) + every 60s via `set_interval`; `[R]` refresh also triggers a poll immediately
-- Display: `_rebuild_table()` checks `server_ver != local_ver`; if true, appends `[yellow]↑ vX.Y[/yellow]` to the project name cell. No indicator if server is offline, project has no CVX name, or versions match.
+- Each local project row includes `cvx_name` + `cvx_local_version` from `project.yaml`
+- Background thread fetches server versions + project list together every 60s
+- `↑` shown in yellow next to project name when server version differs from local record
 
-**Dashboard bindings summary (current):**
+### Dashboard redesign (COMPLETE, 2026-05-07)
 
-| Key | Screen | Action |
-|-----|--------|--------|
-| `N` | Dashboard | New project |
-| `T` | Dashboard | Manage templates |
-| `R` | Dashboard | Refresh (data + CVX poll) |
-| `Q` | Dashboard | Quit |
-| `P` | Project detail | Push to CopalVX |
-| `L` | Project detail | Pull from CopalVX |
-| `N` | Project detail | Rename CopalVX project |
-| `X` | Project detail | Delete from CopalVX server |
-| `D` | Project detail | Delete PM project |
-| `T` | Project detail | Start/stop time tracker |
-| `R` | Project detail | Refresh |
+Replaced `DataTable` with a scrollable list of `ProjectRow` widgets in `DashboardScreen`.
 
-**TemplateScreen bindings:**
+**`ProjectRow(Widget)`** — `src/project_registry/tui_app.py`:
+- `can_focus = True`; height 3 (taller than old table rows)
+- Buttons: **Open Folder** (local only), **▲** push (local + CVX only), **▼** pull (all CVX projects)
+- Posts messages: `Selected`, `OpenFolder`, `PushRequested`, `PullRequested` — handled by `DashboardScreen`
+- Button presses stop event propagation; row-click only fires on non-button area
+
+**`DashboardScreen` layout:**
+```
+Header
+Horizontal (search-row):
+  Input (search, filters in real-time)
+  Checkbox ("Server projects", toggles server-only visibility)
+ScrollableContainer (project-list, padding-top: 1):
+  ProjectRow ...  (local projects)
+  Rule
+  ProjectRow ...  (server-only, greyed out)
+Footer
+```
+
+**Server-only projects:**
+- `copalvx_api.list_projects()` (new — calls `GET /projects`) fetched in same background thread as version poll
+- Projects on the server whose name doesn't match any local `cvx_name` appear below the separator
+- Greyed out (`.server-only` CSS class), only ▼ pull shown
+- Pull for server-only projects defaults to `projects_dir` from config (no local path yet)
+
+**Shared module-level utilities (extracted from `ProjectDetailScreen`):**
+- `_open_folder(path)` — cross-platform file manager launch (Windows: `explorer`, Mac: `open`, Linux: `xdg-open`)
+- `_cvx_next_tag(versions)` — bumps the last dot-segment of the latest version tag
+- `_cvx_stream(proc, modal, app, on_success)` — streams subprocess stdout to `CopalVXProgressModal`; used by Dashboard, ProjectDetail, and auto-push
+
+**Navigation:**
+- `↑`/`↓` arrow keys move focus between rows
+- `Enter` on a local row → opens `ProjectDetailScreen`
+- `Tab` moves between buttons within the focused row
+
+**Dashboard key bindings (current):**
+
+| Key | Action |
+|-----|--------|
+| `N` | New project |
+| `T` | Manage templates |
+| `R` | Refresh (data + server poll) |
+| `Q` | Quit |
+
+**ProjectDetailScreen key bindings (unchanged):**
+
+| Key | Action |
+|-----|--------|
+| `P` | Push to CopalVX |
+| `L` | Pull from CopalVX |
+| `N` | Rename CopalVX project |
+| `X` | Delete from CopalVX server |
+| `D` | Delete PM project |
+| `T` | Start/stop time tracker |
+| `R` | Refresh |
+| `Esc` | Back |
+
+**TemplateScreen key bindings:**
 
 | Key | Action |
 |-----|--------|
 | `N` | New template |
-| `E` | Edit selected template |
-| `D` | Delete selected template |
-| `Esc` | Back to dashboard |
+| `E` | Edit selected |
+| `D` | Delete selected |
+| `Esc` | Back |
 
 ### Phase 7 — Authentication (LOW PRIORITY)
 
