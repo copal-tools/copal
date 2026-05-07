@@ -7,7 +7,10 @@ Screens:
 """
 
 import json
+import platform
+import re
 import shutil
+import subprocess
 import threading
 import urllib.request
 import yaml
@@ -17,11 +20,13 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical, Horizontal
+from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button, Checkbox, DataTable, Footer, Header, Input, Label,
     ProgressBar, RadioButton, RadioSet, RichLog, Rule, Select, Static,
 )
+from textual.widget import Widget
 
 from project_registry.config import DATA_DIR
 from project_registry import copalvx_api
@@ -73,6 +78,56 @@ def _elapsed(start_iso: str) -> str:
         return f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
     except Exception:
         return "?"
+
+
+def _open_folder(path: str) -> None:
+    """Open a directory in the system file manager (non-blocking)."""
+    try:
+        if platform.system() == "Windows":
+            subprocess.Popen(["explorer", path])
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception:
+        pass
+
+
+def _cvx_next_tag(versions: list[str]) -> str:
+    if not versions:
+        return "v1.0"
+    try:
+        parts = versions[0].lstrip("v").split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return "v" + ".".join(parts)
+    except Exception:
+        return "v1.0"
+
+
+_STREAM_PATTERN = re.compile(r"\[(UPLOAD|DOWNLOAD)\]\s+(\d+)/(\d+)\s+(.*)")
+
+
+def _cvx_stream(proc, modal: "CopalVXProgressModal", app: App,
+                on_success=None) -> None:
+    """Stream subprocess stdout to a CopalVXProgressModal. Runs in a thread."""
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            m = _STREAM_PATTERN.match(line)
+            if m:
+                done, total = int(m.group(2)), int(m.group(3))
+                app.call_from_thread(modal.update_progress, done, total)
+                app.call_from_thread(modal.write_line, m.group(4))
+            else:
+                app.call_from_thread(modal.write_line, line)
+        proc.wait()
+        success = proc.returncode == 0
+        app.call_from_thread(modal.mark_done, success)
+        if success and on_success:
+            app.call_from_thread(on_success)
+    except Exception as e:
+        app.call_from_thread(modal.write_line, f"[red]{e}[/red]")
+        app.call_from_thread(modal.mark_done, False)
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -364,6 +419,94 @@ class InitScreen(Screen):
             self.notify(str(e), title="Create failed", severity="error")
 
 
+class ProjectRow(Widget):
+    """One project entry in the dashboard list."""
+
+    can_focus = True
+
+    class Selected(Message):
+        def __init__(self, project: dict) -> None:
+            super().__init__()
+            self.project = project
+
+    class OpenFolder(Message):
+        def __init__(self, path: str) -> None:
+            super().__init__()
+            self.path = path
+
+    class PushRequested(Message):
+        def __init__(self, project: dict) -> None:
+            super().__init__()
+            self.project = project
+
+    class PullRequested(Message):
+        def __init__(self, project: dict) -> None:
+            super().__init__()
+            self.project = project
+
+    DEFAULT_CSS = """
+    ProjectRow {
+        height: 3;
+        padding: 0 1;
+        layout: horizontal;
+        align: left middle;
+        background: $surface;
+        border-bottom: solid $panel;
+    }
+    ProjectRow:focus {
+        background: $surface-lighten-1;
+        border-left: tall $accent;
+    }
+    ProjectRow.-server-only { color: $text-muted; }
+    ProjectRow #row-name { width: 1fr; }
+    ProjectRow Button { margin-left: 1; min-width: 3; height: 1; }
+    ProjectRow #btn-open-folder { min-width: 13; }
+    """
+
+    def __init__(self, project: dict, has_update: bool = False) -> None:
+        is_so = project.get("is_server_only", False)
+        super().__init__(classes="-server-only" if is_so else "")
+        self._project   = project
+        self._has_update = has_update
+
+    def compose(self) -> ComposeResult:
+        name = self._project.get("name", "?")
+        if self._has_update:
+            name = f"{name} [yellow]↑[/yellow]"
+        yield Label(name, id="row-name")
+
+        path     = self._project.get("path")
+        cvx_name = self._project.get("cvx_name")
+        is_so    = self._project.get("is_server_only", False)
+
+        if path:
+            yield Button("Open Folder", id="btn-open-folder")
+        if cvx_name and not is_so:
+            yield Button("▲", id="btn-push")
+        if cvx_name:
+            yield Button("▼", id="btn-pull")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        bid = event.button.id
+        if bid == "btn-open-folder":
+            self.post_message(self.OpenFolder(self._project.get("path", "")))
+        elif bid == "btn-push":
+            self.post_message(self.PushRequested(self._project))
+        elif bid == "btn-pull":
+            self.post_message(self.PullRequested(self._project))
+
+    def on_click(self, event) -> None:
+        if getattr(event, "widget", None) is not self:
+            return  # click was on a child button — ignore at row level
+        self.post_message(self.Selected(self._project))
+
+    def on_key(self, event) -> None:
+        if event.key == "enter":
+            self.post_message(self.Selected(self._project))
+            event.stop()
+
+
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_project",      "New project"),
@@ -372,59 +515,76 @@ class DashboardScreen(Screen):
         Binding("q", "app.quit",         "Quit"),
     ]
 
-    _rows: list[dict] = []
-    _cvx_latest: dict[str, str | None] = {}  # {cvx_project_name: latest_server_version}
+    _local_rows:  list[dict]            = []
+    _server_rows: list[dict]            = []
+    _cvx_latest:  dict[str, str | None] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield DataTable(id="projects-table")
+        with Horizontal(id="search-row"):
+            yield Input(placeholder="Search projects…", id="search-input")
+            yield Checkbox("Server projects", value=True, id="server-check")
+        yield ScrollableContainer(id="project-list")
         yield Footer()
 
     def on_mount(self) -> None:
-        table             = self.query_one(DataTable)
-        table.cursor_type = "row"
-        table.add_columns("Name", "Phase", "Time", "Deadline", "Last delivery")
+        self.query_one("#search-input", Input).focus()
         self._refresh_data()
         self.set_interval(1,  self._tick_timer)
         self.set_interval(30, self._refresh_data)
-        self.set_interval(60, self._poll_cvx_versions)
-        threading.Thread(target=self._fetch_cvx_versions, daemon=True).start()
+        self.set_interval(60, self._poll_server)
+        threading.Thread(target=self._fetch_server_data, daemon=True).start()
+
+    # ── Data ──────────────────────────────────────────────────────────────────
 
     def _refresh_data(self) -> None:
-        self._rows = _dashboard_rows()
-        self._rebuild_table()
+        self._local_rows = _dashboard_rows()
+        self._rebuild_list()
 
-    def _rebuild_table(self) -> None:
-        """Repopulate the DataTable from cached rows and CVX version data."""
-        table      = self.query_one(DataTable)
-        session    = _active_session()
-        active_pid = session.get("project_id") if session else None
-        table.clear()
-        for row in self._rows:
-            cvx_name   = row.get("cvx_name")
-            local_ver  = row.get("cvx_local_version")
-            server_ver = self._cvx_latest.get(cvx_name) if cvx_name else None
-            has_update = bool(server_ver and server_ver != local_ver)
+    def _rebuild_list(self) -> None:
+        query     = self.query_one("#search-input", Input).value.strip().lower()
+        inc_srv   = self.query_one("#server-check", Checkbox).value
+        container = self.query_one("#project-list", ScrollableContainer)
+        container.remove_children()
 
-            marker    = "● " if row["id"] == active_pid else "  "
-            name_cell = row["name"]
-            if has_update:
-                name_cell = f"{row['name']} [yellow]↑ {server_ver}[/yellow]"
+        local_cvx = {r["cvx_name"] for r in self._local_rows if r.get("cvx_name")}
 
-            table.add_row(
-                marker + name_cell,
-                row["phase"],
-                row["time_str"],
-                row["deadline"],
-                row["last_delivery"],
-                key=row["id"],
-            )
+        local = [
+            r for r in self._local_rows
+            if not query or query in r["name"].lower() or query in r["id"].lower()
+        ]
 
-    def _poll_cvx_versions(self) -> None:
-        threading.Thread(target=self._fetch_cvx_versions, daemon=True).start()
+        server_only = []
+        if inc_srv:
+            for sr in self._server_rows:
+                if sr["name"] in local_cvx:
+                    continue
+                if query and query not in sr["name"].lower():
+                    continue
+                server_only.append({
+                    "id":                None,
+                    "name":              sr["name"],
+                    "path":              None,
+                    "cvx_name":          sr["name"],
+                    "cvx_local_version": None,
+                    "is_server_only":    True,
+                })
 
-    def _fetch_cvx_versions(self) -> None:
-        """Background: query the CopalVX server for each project's latest version."""
+        for row in local:
+            svr        = self._cvx_latest.get(row.get("cvx_name")) if row.get("cvx_name") else None
+            has_update = bool(svr and svr != row.get("cvx_local_version"))
+            container.mount(ProjectRow(row, has_update=has_update))
+
+        if server_only:
+            container.mount(Rule())
+        for row in server_only:
+            container.mount(ProjectRow(row))
+
+    def _poll_server(self) -> None:
+        threading.Thread(target=self._fetch_server_data, daemon=True).start()
+
+    def _fetch_server_data(self) -> None:
+        self._server_rows = copalvx_api.list_projects()
         result: dict[str, str | None] = {}
         for entry in load_registry():
             yaml_path = Path(entry.get("path", "")) / "project.yaml"
@@ -434,30 +594,116 @@ class DashboardScreen(Screen):
             cvx_name = (record.get("copalvx") or {}).get("project_name")
             if not cvx_name:
                 continue
-            versions        = copalvx_api.get_versions(cvx_name)
+            versions         = copalvx_api.get_versions(cvx_name)
             result[cvx_name] = versions[0] if versions else None
         self._cvx_latest = result
-        self.app.call_from_thread(self._rebuild_table)
+        self.app.call_from_thread(self._rebuild_list)
+
+    # ── Timer ─────────────────────────────────────────────────────────────────
 
     def _tick_timer(self) -> None:
         session = _active_session()
         if session:
-            pid     = session.get("project_id", "")
-            name    = next((r["name"] for r in self._rows if r["id"] == pid), pid)
-            elapsed = _elapsed(session.get("start", ""))
-            self.app.title = f"PM  ●  {name}  {elapsed}"
+            pid    = session.get("project_id", "")
+            name   = next((r["name"] for r in self._local_rows if r["id"] == pid), pid)
+            self.app.title = f"PM  ●  {name}  {_elapsed(session.get('start', ''))}"
         else:
             self.app.title = "PM"
 
+    # ── Events ────────────────────────────────────────────────────────────────
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search-input":
+            self._rebuild_list()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "server-check":
+            self._rebuild_list()
+
+    def on_key(self, event) -> None:
+        rows = list(self.query(ProjectRow))
+        if not rows:
+            return
+        focused = self.focused
+        if event.key == "down":
+            idx = (rows.index(focused) + 1) if focused in rows else 0
+            rows[min(idx, len(rows) - 1)].focus()
+            event.stop()
+        elif event.key == "up":
+            idx = (rows.index(focused) - 1) if focused in rows else 0
+            rows[max(idx, 0)].focus()
+            event.stop()
+
+    def on_project_row_selected(self, event: ProjectRow.Selected) -> None:
+        if event.project.get("is_server_only"):
+            return
+        self.app.push_screen(ProjectDetailScreen(event.project))
+
+    def on_project_row_open_folder(self, event: ProjectRow.OpenFolder) -> None:
+        _open_folder(event.path)
+
+    def on_project_row_push_requested(self, event: ProjectRow.PushRequested) -> None:
+        project  = event.project
+        cvx_name = project.get("cvx_name", "")
+        path     = project.get("path", "")
+        versions = copalvx_api.get_versions(cvx_name)
+        suggested = _cvx_next_tag(versions)
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+            tag      = result["tag"]
+            msg      = result.get("message", "")
+            progress = CopalVXProgressModal(f"Push: {cvx_name} @ {tag}")
+            self.app.push_screen(progress)
+            def _run():
+                try:
+                    proc = copalvx_api.run_push(cvx_name, tag, path, msg, "")
+                    _cvx_stream(proc, progress, self.app, self._refresh_data)
+                except Exception as e:
+                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                    self.app.call_from_thread(progress.mark_done, False)
+            threading.Thread(target=_run, daemon=True).start()
+
+        self.app.push_screen(CopalVXPushModal(cvx_name, suggested), on_confirm)
+
+    def on_project_row_pull_requested(self, event: ProjectRow.PullRequested) -> None:
+        project  = event.project
+        cvx_name = project.get("cvx_name", "")
+        path     = project.get("path") or ""
+        versions = copalvx_api.get_versions(cvx_name)
+        if not versions:
+            self.notify("No versions on server.", title="CopalVX", severity="warning")
+            return
+        if not path:
+            try:
+                cfg  = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
+                path = cfg.get("projects_dir") or str(Path.home() / "Projects")
+            except Exception:
+                path = str(Path.home() / "Projects")
+
+        def on_confirm(result: dict | None) -> None:
+            if result is None:
+                return
+            tag      = result["tag"]
+            progress = CopalVXProgressModal(f"Pull: {cvx_name} @ {tag}")
+            self.app.push_screen(progress)
+            def _run():
+                try:
+                    proc = copalvx_api.run_pull(cvx_name, tag, path)
+                    _cvx_stream(proc, progress, self.app, self._refresh_data)
+                except Exception as e:
+                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                    self.app.call_from_thread(progress.mark_done, False)
+            threading.Thread(target=_run, daemon=True).start()
+
+        self.app.push_screen(CopalVXPullModal(cvx_name, versions, path), on_confirm)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
     def action_refresh(self) -> None:
         self._refresh_data()
-        self._poll_cvx_versions()
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        pid     = event.row_key.value
-        project = next((r for r in self._rows if r["id"] == pid), None)
-        if project:
-            self.app.push_screen(ProjectDetailScreen(project))
+        self._poll_server()
 
     def action_new_project(self) -> None:
         self.app.push_screen(InitScreen())
@@ -1115,46 +1361,15 @@ class ProjectDetailScreen(Screen):
         path = self._project.get("path", "")
         return Path(path).name if path else self._data.get("name", "unknown")
 
-    def _cvx_next_tag(self, versions: list[str]) -> str:
-        if not versions:
-            return "v1.0"
-        latest = versions[0]
-        try:
-            parts = latest.lstrip("v").split(".")
-            parts[-1] = str(int(parts[-1]) + 1)
-            return "v" + ".".join(parts)
-        except Exception:
-            return "v1.0"
-
     def _cvx_stream_subprocess(self, proc, progress_modal: "CopalVXProgressModal") -> None:
-        """Read subprocess stdout line-by-line, update progress modal. Runs in a thread."""
-        import re
-        pattern = re.compile(r"\[(UPLOAD|DOWNLOAD)\]\s+(\d+)/(\d+)\s+(.*)")
-        try:
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                m = pattern.match(line)
-                if m:
-                    done, total = int(m.group(2)), int(m.group(3))
-                    self.app.call_from_thread(progress_modal.update_progress, done, total)
-                    self.app.call_from_thread(progress_modal.write_line, m.group(4))
-                else:
-                    self.app.call_from_thread(progress_modal.write_line, line)
-            proc.wait()
-            success = proc.returncode == 0
-            self.app.call_from_thread(progress_modal.mark_done, success)
-            if success:
-                self.app.call_from_thread(self._refresh_data)
-        except Exception as e:
-            self.app.call_from_thread(progress_modal.write_line, f"[red]{e}[/red]")
-            self.app.call_from_thread(progress_modal.mark_done, False)
+        _cvx_stream(proc, progress_modal, self.app, self._refresh_data)
 
     def action_push_copalvx(self) -> None:
         project_name = self._cvx_project_name()
         project_path = self._project.get("path", "")
 
         versions     = copalvx_api.get_versions(project_name)
-        suggested    = self._cvx_next_tag(versions)
+        suggested    = _cvx_next_tag(versions)
 
         def on_confirm(result: dict | None) -> None:
             if result is None:
@@ -1314,6 +1529,18 @@ class PMApp(App):
         background: $surface;
     }
     DataTable {
+        height: 1fr;
+    }
+    #search-row {
+        height: 3;
+        padding: 0 1;
+        align: left middle;
+    }
+    #search-input {
+        width: 1fr;
+        margin-right: 1;
+    }
+    #project-list {
         height: 1fr;
     }
     #detail-body {

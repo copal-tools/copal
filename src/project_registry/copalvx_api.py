@@ -27,6 +27,16 @@ def _client_path() -> str | None:
     return _config().get("client_path")
 
 
+def list_projects() -> list[dict]:
+    """Returns server project list (name, latest_version, etc.), or [] on error."""
+    try:
+        url = f"{_base_url()}/projects"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return []
+
+
 def get_versions(project_name: str) -> list[str]:
     """Returns version list (newest first), or [] on any error."""
     try:
