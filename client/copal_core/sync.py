@@ -49,8 +49,16 @@ class SyncEngine:
             expected_size = asset['size']
             seaweed_fid = asset['fid']
             
-            # The absolute path on disk
-            full_dest_path = os.path.join(local_root, rel_path)
+            # The absolute path on disk.
+            # Validate the resolved path stays inside local_root to guard against
+            # path-traversal attacks if the server manifest is ever malicious or
+            # the server is compromised (e.g. "../../../etc/passwd" or an absolute
+            # path that silently overrides local_root on os.path.join).
+            full_dest_path = os.path.normpath(os.path.join(local_root, rel_path))
+            safe_root = os.path.normpath(local_root) + os.sep
+            if not full_dest_path.startswith(safe_root):
+                print(f"⚠️  Skipping unsafe path from server manifest: {rel_path!r}")
+                continue
             
             # Task Object (Data needed to execute the action later)
             task = {

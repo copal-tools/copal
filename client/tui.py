@@ -64,7 +64,7 @@ def _rule(char="─"):
 
 # ── Screen helpers ─────────────────────────────────────────────────────────────
 def _clear():
-    subprocess.run(["cls" if os.name == "nt" else "clear"], shell=True, capture_output=True)
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True, capture_output=True)
 
 
 def _header(subtitle="Asset Dashboard"):
@@ -378,7 +378,14 @@ def do_push(preset_project=None):
     # Upload
     if needed:
         print(f"\n  Uploading {len(needed)} new file(s)...")
-        to_upload = [f for f in local_assets if f["path"] in needed]
+        # Deduplicate by hash: two paths with identical content share one asset row
+        # on the server, so only upload the bytes once — the commit maps both paths.
+        seen_hashes: set = set()
+        to_upload = []
+        for f in local_assets:
+            if f["path"] in needed and f["hash"] not in seen_hashes:
+                seen_hashes.add(f["hash"])
+                to_upload.append(f)
         engine    = SyncEngine(max_threads=8)
         successful = engine.execute_upload_plan(to_upload, progress_callback=print_progress)
         print(f"\n  Uploaded {len(successful)}/{len(to_upload)}")
@@ -390,8 +397,7 @@ def do_push(preset_project=None):
 
         print("  Confirming to database...")
         try:
-            for item in successful:
-                api.confirm_upload(item["hash"], item["size"], item["fid"])
+            api.confirm_uploads(successful)
         except Exception as e:
             print(f"  {red('DB error:')} {e}")
             input("  Press Enter...")
@@ -532,9 +538,13 @@ def do_pull(preset_project=None):
     print(f"\n\n  Done in {elapsed:.1f}s.")
     print(f"  Success: {results['success']}  Fail: {results['fail']}  Skipped: {results['skip']}")
 
-    fs.save_local_state(target_dir, project, tag)
-    registry.register_project(project, target_dir, tag)
-    pm_hooks.hook_post_pull(target_dir, project, tag)
+    if results["fail"] > 0:
+        print(f"\n  {yellow('Warning:')} {results['fail']} file(s) failed to download.")
+        print(f"  {dim('Local state not updated — this checkout is incomplete.')}")
+    else:
+        fs.save_local_state(target_dir, project, tag)
+        registry.register_project(project, target_dir, tag)
+        pm_hooks.hook_post_pull(target_dir, project, tag)
 
     input("\n  Press Enter to return...")
 
@@ -575,7 +585,12 @@ def push_cli(project, tag, path, message=None, author=None):
 
     if needed:
         print(f"Uploading {len(needed)} new files...")
-        to_upload = [f for f in local_assets if f["path"] in needed]
+        seen_hashes: set = set()
+        to_upload = []
+        for f in local_assets:
+            if f["path"] in needed and f["hash"] not in seen_hashes:
+                seen_hashes.add(f["hash"])
+                to_upload.append(f)
         engine    = SyncEngine(max_threads=8)
 
         def _upload_progress(done, total, msg):
@@ -589,8 +604,7 @@ def push_cli(project, tag, path, message=None, author=None):
             sys.exit(1)
 
         try:
-            for item in successful_uploads:
-                api.confirm_upload(item["hash"], item["size"], item["fid"])
+            api.confirm_uploads(successful_uploads)
         except Exception as e:
             print(f"Error confirming uploads: {e}", file=sys.stderr)
             sys.exit(1)
@@ -637,15 +651,15 @@ def pull_cli(project, tag, target, policy="backup"):
     print(f"Done. Success: {results['success']} | Fail: {results['fail']} | Skipped: {results['skip']}")
 
     if results["fail"] > 0:
-        print(f"Warning: {results['fail']} file(s) failed.", file=sys.stderr)
+        # Do NOT save state — marking an incomplete checkout as current would hide
+        # missing files on every subsequent pull (they'd appear as SKIP).
+        print(f"Error: {results['fail']} file(s) failed. State not saved.", file=sys.stderr)
+        sys.exit(1)
 
     fs.save_local_state(target, project, tag)
     registry.register_project(project, target, tag)
     pm_hooks.hook_post_pull(target, project, tag)
     print(f"[CopalVX] Done: {project} @ {tag}")
-
-    if results["fail"] > 0:
-        sys.exit(1)
 
 
 # ── First-run setup ───────────────────────────────────────────────────────────

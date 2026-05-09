@@ -106,9 +106,11 @@ def download_file(fid, local_path, expected_size, expected_hash):
             actual_hash = _hash_file(local_path)
             if actual_hash != expected_hash:
                 os.remove(local_path)
-                return False, "Hash mismatch — file corrupted in transit"
-
-            return True, "Success"
+                last_result = (False, "Hash mismatch — file corrupted in transit")
+                # Treat as a retryable failure — fall through to sleep-and-retry
+                # at the bottom of the loop rather than giving up immediately.
+            else:
+                return True, "Success"
 
         except ConnectionError:
             last_result = (False, "Connection Refused")

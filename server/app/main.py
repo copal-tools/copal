@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import requests
 from urllib.parse import urlparse
 from fastapi import FastAPI, Depends, HTTPException
@@ -21,7 +22,8 @@ logger = logging.getLogger(__name__)
 # SeaweedFS Internal (API -> Master / Filer)
 SEAWEED_MASTER_URL = os.getenv("SEAWEED_MASTER_URL", "http://127.0.0.1:9333")
 _master = urlparse(SEAWEED_MASTER_URL)
-SEAWEED_FILER_URL = f"{_master.scheme}://{_master.hostname}:8888"
+SEAWEED_FILER_PORT = int(os.getenv("SEAWEED_FILER_PORT", "8888"))
+SEAWEED_FILER_URL = f"{_master.scheme}://{_master.hostname}:{SEAWEED_FILER_PORT}"
 
 # Public IP (What we send to the client)
 # In Docker this comes from the compose env. Locally, defaults to your server IP.
@@ -51,6 +53,24 @@ def get_upload_url(replication="000"):
 
 
 app = FastAPI()
+
+# ── Request body size guard ────────────────────────────────────────────────────
+# Rejects manifests or payloads over 10 MB before they reach any endpoint.
+# File uploads go directly to SeaweedFS and never pass through here, so this
+# only affects JSON API calls (handshake manifests, commit payloads, etc.).
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "10")) * 1024 * 1024
+
+@app.middleware("http")
+async def limit_request_body(request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+        from starlette.responses import Response
+        limit_mb = MAX_REQUEST_BODY_BYTES // (1024 * 1024)
+        return Response(
+            content=f"Request body exceeds {limit_mb} MB limit.",
+            status_code=413,
+        )
+    return await call_next(request)
 
 # --- DATA MODELS ---
 
@@ -93,6 +113,9 @@ class DeleteProjectRequest(BaseModel):
 class RenameProjectRequest(BaseModel):
     new_name: str
 
+class BulkConfirmRequest(BaseModel):
+    files: List[ConfirmUploadRequest]
+
 
 # --- ENDPOINTS ---
 
@@ -121,8 +144,8 @@ def handshake(request: HandshakeRequest, db: Session = Depends(get_db)):
     if not client_hashes:
         return {"required_files": [], "message": "Manifest was empty."}
 
-    query = text("SELECT file_hash FROM assets WHERE file_hash IN :hashes")
-    result = db.execute(query, {"hashes": tuple(client_hashes)})
+    query = text("SELECT file_hash FROM assets WHERE file_hash = ANY(:hashes)")
+    result = db.execute(query, {"hashes": list(client_hashes)})
     known_hashes = {row[0] for row in result}
 
     files_to_upload = []
@@ -190,9 +213,75 @@ def confirm_upload(request: ConfirmUploadRequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=500, detail="Internal server error.")
 
 
+@app.post("/confirm_uploads")
+def confirm_uploads_bulk(request: BulkConfirmRequest, db: Session = Depends(get_db)):
+    """Bulk version of /confirm_upload — records all uploaded blobs in one round-trip.
+
+    All blobs are verified against SeaweedFS before any DB write. If any
+    verification fails the entire request is rejected so the asset store stays
+    consistent. The client should re-upload the missing files and try again.
+    """
+    if not request.files:
+        return {"status": "ok", "recorded": 0}
+
+    logger.info("Bulk confirm: verifying %d blob(s) in SeaweedFS.", len(request.files))
+
+    # Verify every blob exists before touching the DB
+    missing = []
+    for item in request.files:
+        try:
+            head = requests.head(f"{SEAWEED_FILER_URL}{item.seaweed_fid}", timeout=5)
+            if head.status_code != 200:
+                missing.append(item.file_hash[:8])
+        except requests.RequestException as e:
+            logger.error("Could not reach SeaweedFS filer to verify %s: %s", item.seaweed_fid, e)
+            raise HTTPException(status_code=503, detail="Storage unavailable. Try again.")
+
+    if missing:
+        logger.warning("Bulk confirm rejected — %d blob(s) missing from SeaweedFS: %s", len(missing), missing)
+        raise HTTPException(
+            status_code=422,
+            detail=f"{len(missing)} blob(s) not found in storage: {missing}. Re-upload and try again.",
+        )
+
+    # All blobs confirmed — write everything in a single transaction
+    try:
+        db.execute(
+            text("""
+                INSERT INTO assets (file_hash, size_bytes, seaweed_fid, mime_type)
+                VALUES (:hash, :size, :fid, :mime)
+                ON CONFLICT (file_hash) DO NOTHING
+            """),
+            [
+                {"hash": f.file_hash, "size": f.size_bytes, "fid": f.seaweed_fid, "mime": f.mime_type}
+                for f in request.files
+            ],
+        )
+        db.commit()
+        logger.info("Bulk confirm: recorded %d asset(s).", len(request.files))
+        return {"status": "ok", "recorded": len(request.files)}
+    except Exception as e:
+        db.rollback()
+        logger.error("DB error in confirm_uploads: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error.")
+
+
 @app.post("/commit")
 def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     logger.info("Creating commit '%s' for project '%s'", request.version_tag, request.project_id)
+
+    # Validate tag format — a slash would silently break /checkout/{name}/{tag}
+    # URL routing; spaces and other special chars cause subtle retrieval bugs.
+    # Valid examples: v1.0  v1.2.3  v2.0-rc1  1.0
+    if not re.match(r"^v?\d+(\.\d+)*(-\w+)?$", request.version_tag):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid version_tag '{request.version_tag}'. "
+                "Must be digits and dots with an optional 'v' prefix and optional "
+                "'-word' suffix — e.g. 'v1.0', 'v1.2.3', 'v2.0-rc1'."
+            ),
+        )
 
     # --- STEP 1: Resolve project ---
     project = db.execute(
@@ -210,11 +299,11 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
     # --- STEP 2: Validate ALL hashes resolve BEFORE writing anything ---
     # If any upload silently failed, we catch it here and abort cleanly.
     file_map = {f.path: f.hash for f in request.files}
-    unique_hashes = tuple(set(file_map.values()))
+    unique_hashes = list(set(file_map.values()))
 
     if unique_hashes:
         asset_rows = db.execute(
-            text("SELECT file_hash, id FROM assets WHERE file_hash IN :hashes"),
+            text("SELECT file_hash, id FROM assets WHERE file_hash = ANY(:hashes)"),
             {"hashes": unique_hashes}
         ).fetchall()
         hash_to_uuid = {row[0]: row[1] for row in asset_rows}
@@ -343,29 +432,35 @@ def get_project_versions(project_name: str, db: Session = Depends(get_db)):
 def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
     logger.info("Fetching metadata for: %s", project_name)
 
+    # LEFT JOIN so a project that exists but has no commits yet still returns a row
+    # (commit columns will be NULL). INNER JOIN was causing spurious 404s on new projects.
     query_info = text("""
         SELECT p.id, p.created_at, c.id, c.version_tag, c.author_name, c.created_at, c.message
         FROM projects p
-        JOIN commits c ON p.id = c.project_id
+        LEFT JOIN commits c ON p.id = c.project_id
         WHERE p.name = :name
-        ORDER BY c.created_at DESC
+        ORDER BY c.created_at DESC NULLS LAST
         LIMIT 1
     """)
     row = db.execute(query_info, {"name": project_name}).fetchone()
 
+    # No row at all → project genuinely doesn't exist
     if not row:
-        raise HTTPException(status_code=404, detail="Project not found or has no versions")
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
 
     project_id, p_created, commit_id, tag, author, c_created, msg = row
 
-    query_size = text("""
-        SELECT SUM(a.size_bytes)
-        FROM project_files pf
-        JOIN assets a ON pf.asset_id = a.id
-        WHERE pf.commit_id = :cid
-    """)
-    size_result = db.execute(query_size, {"cid": commit_id}).fetchone()
-    total_bytes = size_result[0] if size_result[0] else 0
+    # commit_id is None when the project exists but has never been pushed to
+    total_bytes = 0
+    if commit_id is not None:
+        query_size = text("""
+            SELECT SUM(a.size_bytes)
+            FROM project_files pf
+            JOIN assets a ON pf.asset_id = a.id
+            WHERE pf.commit_id = :cid
+        """)
+        size_result = db.execute(query_size, {"cid": commit_id}).fetchone()
+        total_bytes = size_result[0] if size_result[0] else 0
 
     authors_rows = db.execute(text("""
         SELECT DISTINCT c.author_name
@@ -377,7 +472,7 @@ def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
         "latest_version": tag,
         "author": author,
         "authors": [r[0] for r in authors_rows],
-        "updated_at": c_created.isoformat(),
+        "updated_at": c_created.isoformat() if c_created else None,
         "created_at": p_created.isoformat(),
         "total_size_bytes": total_bytes,
         "total_size_mb": round(total_bytes / (1024 * 1024), 2),
@@ -499,22 +594,87 @@ def delete_project(project_name: str, request: DeleteProjectRequest, db: Session
     # Now safe to delete orphan assets (project_files no longer reference them)
     if orphan_fids:
         db.execute(
-            text("DELETE FROM assets WHERE seaweed_fid IN :fids"),
-            {"fids": tuple(orphan_fids)}
+            text("DELETE FROM assets WHERE seaweed_fid = ANY(:fids)"),
+            {"fids": orphan_fids}
         )
 
     db.commit()
 
     deleted_blobs = 0
+    leaked_fids = []
     for fid in orphan_fids:
         try:
             requests.delete(f"{SEAWEED_FILER_URL}{fid}", timeout=5)
             deleted_blobs += 1
-        except Exception:
-            pass
+        except Exception as e:
+            # DB record already gone — log the FID so it can be manually cleaned up
+            logger.warning("Failed to delete blob %s from SeaweedFS: %s", fid, e)
+            leaked_fids.append(fid)
 
-    logger.info("Project '%s' deleted. Orphan blobs removed: %d", project_name, deleted_blobs)
-    return {"status": "deleted", "project": project_name, "orphan_blobs_deleted": deleted_blobs}
+    if leaked_fids:
+        logger.warning(
+            "Project '%s': %d blob(s) removed from DB but NOT from SeaweedFS (storage unavailable?). "
+            "Leaked FIDs: %s",
+            project_name, len(leaked_fids), leaked_fids,
+        )
+
+    logger.info("Project '%s' deleted. Orphan blobs removed: %d, leaked: %d",
+                project_name, deleted_blobs, len(leaked_fids))
+    return {
+        "status": "deleted",
+        "project": project_name,
+        "orphan_blobs_deleted": deleted_blobs,
+        "orphan_blobs_leaked": len(leaked_fids),
+    }
+
+
+@app.post("/admin/cleanup-orphans")
+def cleanup_orphans(db: Session = Depends(get_db)):
+    """Delete asset records (and their SeaweedFS blobs) that are not referenced
+    by any project_files row.
+
+    A 24-hour grace window prevents racing with in-progress pushes: a file that
+    was confirmed via /confirm_upload but whose /commit is still pending will not
+    be collected until the next day.
+
+    Safe to call repeatedly — idempotent.
+    """
+    orphan_rows = db.execute(text("""
+        SELECT id, seaweed_fid FROM assets
+        WHERE id NOT IN (SELECT DISTINCT asset_id FROM project_files)
+        AND created_at < NOW() - INTERVAL '24 hours'
+    """)).fetchall()
+
+    if not orphan_rows:
+        logger.info("Orphan cleanup: nothing to remove.")
+        return {"status": "ok", "assets_deleted": 0, "blobs_deleted": 0}
+
+    orphan_ids  = [r[0] for r in orphan_rows]
+    orphan_fids = [r[1] for r in orphan_rows]
+
+    # Remove DB records first
+    db.execute(text("DELETE FROM assets WHERE id = ANY(:ids)"), {"ids": orphan_ids})
+    db.commit()
+    logger.info("Orphan cleanup: removed %d asset record(s) from DB.", len(orphan_ids))
+
+    # Remove blobs from SeaweedFS (best-effort; failures are logged but don't abort)
+    blobs_deleted = 0
+    for fid in orphan_fids:
+        try:
+            requests.delete(f"{SEAWEED_FILER_URL}{fid}", timeout=5)
+            blobs_deleted += 1
+        except Exception as e:
+            logger.warning("Orphan cleanup: failed to delete blob %s: %s", fid, e)
+
+    logger.info(
+        "Orphan cleanup: deleted %d/%d blob(s) from SeaweedFS.",
+        blobs_deleted, len(orphan_fids),
+    )
+    return {
+        "status": "ok",
+        "assets_deleted": len(orphan_ids),
+        "blobs_deleted": blobs_deleted,
+    }
 
 
 # Run with: uv run uvicorn main:app --reload

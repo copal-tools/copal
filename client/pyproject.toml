@@ -14,6 +14,14 @@ copalvx = "tui:main"
 
 [tool.uv]
 package = true
+dev-dependencies = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q = quiet, -v can be passed manually for verbose
+addopts = "-q"
 
 [tool.hatch.build.targets.wheel]
 include = ["tui.py", "copal_core"]

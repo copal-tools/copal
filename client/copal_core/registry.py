@@ -50,5 +50,9 @@ def remove_project(local_path):
     """Removes a project from the recent list (e.g., if deleted)."""
     projects = load_registry()
     projects = [p for p in projects if p["path"] != str(local_path)]
-    with open(REGISTRY_FILE, "w") as f:
-        json.dump(projects, f, indent=4)
+    try:
+        REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(REGISTRY_FILE, "w") as f:
+            json.dump(projects, f, indent=4)
+    except Exception as e:
+        print(f"⚠️ Failed to update registry: {e}")

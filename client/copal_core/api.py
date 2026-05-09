@@ -7,7 +7,6 @@ API_TIMEOUT = (10, 30)
 def handshake(project_name, local_assets):
     """Asks server which files are missing."""
     payload = {
-        "client_id": "tui-client",
         "project_id": project_name,
         "client_manifest": [
             {"path": f["path"], "hash": f["hash"], "size": f["size"]}
@@ -19,7 +18,7 @@ def handshake(project_name, local_assets):
     return resp.json()
 
 def confirm_upload(file_hash, size, fid):
-    """Tells DB that an upload finished successfully."""
+    """Tells DB that a single upload finished successfully. Kept for compatibility."""
     payload = {
         "file_hash": file_hash,
         "size_bytes": size,
@@ -28,6 +27,28 @@ def confirm_upload(file_hash, size, fid):
     }
     resp = requests.post(ENDPOINTS["confirm"], json=payload, timeout=API_TIMEOUT)
     resp.raise_for_status()
+
+
+def confirm_uploads(items):
+    """Bulk confirm — records all uploaded blobs in a single request.
+
+    :param items: list of dicts with keys 'hash', 'size', 'fid'
+    :raises: requests.HTTPError on server error, ConnectionError if unreachable
+    """
+    payload = {
+        "files": [
+            {
+                "file_hash": item["hash"],
+                "size_bytes": item["size"],
+                "seaweed_fid": item["fid"],
+                "mime_type": "application/octet-stream",
+            }
+            for item in items
+        ]
+    }
+    resp = requests.post(f"{API_BASE}/confirm_uploads", json=payload, timeout=API_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
 
 def commit(project, tag, message, author, files):
     """Finalizes the version."""
