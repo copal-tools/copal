@@ -144,6 +144,32 @@ def rename_project(old_name, new_name):
         raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
 
 
+def get_server_stats():
+    """Returns server-wide stats dict. Raises ConnectionError if unreachable."""
+    try:
+        resp = requests.get(f"{API_BASE}/server/stats", timeout=API_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
+def update_description(project_name, description):
+    """Sets a project's description. Raises ValueError on 404."""
+    try:
+        resp = requests.patch(
+            f"{API_BASE}/projects/{project_name}/description",
+            json={"description": description},
+            timeout=API_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            raise ValueError(f"Project '{project_name}' not found.")
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
 def delete_project(project_name, delete_orphan_files=False):
     """Deletes a project. Returns response dict. Raises ValueError on 404."""
     try:

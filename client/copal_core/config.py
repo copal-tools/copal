@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
     "filer_port": 8888,
     "default_author": getpass.getuser(),
     "default_projects_root": "",
+    "conflict_policy": "backup",
 }
 
 

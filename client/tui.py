@@ -104,6 +104,17 @@ def show_dashboard():
         except Exception:
             print(f"  System: {red('UNREACHABLE')}  —  {dim(API_BASE)} not responding")
 
+        try:
+            st = api.get_server_stats()
+            print(
+                f"  {st['total_projects']} project(s)"
+                f"  |  {st['total_versions']} version(s)"
+                f"  |  {fmt_size(st['total_storage_bytes'])} stored"
+                f"  |  {st['total_unique_blobs']} unique blob(s)"
+            )
+        except Exception:
+            pass
+
         print(f"  Server:  {dim(API_BASE)}")
         print()
 
@@ -116,16 +127,17 @@ def show_dashboard():
 
         _rule()
         if projects:
-            hdr = f"  {'#':>3}  {'Project':<22}  {'Latest':>7}  {'Vers':>4}  {'Last Push':<11}  Author"
+            hdr = f"  {'#':>3}  {'Project':<18}  {'Latest':>7}  {'Vers':>4}  {'Size':>8}  {'Last Push':<11}  Author"
             print(bold(hdr))
             _rule()
             for i, p in enumerate(projects, 1):
-                name = (p["name"] or "")[:21]
+                name = (p["name"] or "")[:17]
                 ver  = (p["latest_version"] or "—")[:7]
                 vers = str(p["version_count"])
+                size = fmt_size(p.get("total_storage_bytes"))
                 date = fmt_date(p["last_push"], short=True) if p["last_push"] else "—"
-                auth = (p["last_author"] or "—")[:14]
-                print(f"  {i:>3}  {name:<22}  {ver:>7}  {vers:>4}  {date:<11}  {auth}")
+                auth = (p["last_author"] or "—")[:12]
+                print(f"  {i:>3}  {name:<18}  {ver:>7}  {vers:>4}  {size:>8}  {date:<11}  {auth}")
             _rule()
             print(f"  {len(projects)} project(s)")
         else:
@@ -169,7 +181,10 @@ def show_project(name):
     while True:
         _header(f"Project: {name}")
 
-        # Metadata block
+        # Fetch metadata and versions — cached for use in all choice handlers
+        meta = {}
+        versions = []
+
         try:
             meta = api.get_metadata(name)
             size_str = fmt_size(meta.get("total_size_bytes"))
@@ -177,6 +192,8 @@ def show_project(name):
             print(f"  Latest:   {bold(meta['latest_version'])}   Size: {size_str}   Updated: {fmt_date(meta['updated_at'], short=True)}")
             print(f"  Created:  {fmt_date(meta['created_at'], short=True)}   Authors: {authors}")
             print(f"  Message:  {dim(meta.get('message', ''))}")
+            if meta.get("description"):
+                print(f"  Notes:    {meta['description']}")
         except ValueError as e:
             print(f"  {yellow(str(e))}")
         except Exception as e:
@@ -184,7 +201,6 @@ def show_project(name):
 
         print()
 
-        # Version list
         try:
             versions = api.get_versions(name)
             _rule()
@@ -207,6 +223,8 @@ def show_project(name):
             f"  {cyan('[P]')}ush  "
             f"{cyan('[L]')}ull  "
             f"{cyan('[N]')}ame  "
+            f"{cyan('[E]')}dit notes  "
+            f"{cyan('[F]')}iles  "
             f"{cyan('[D]')}elete  "
             f"{cyan('[B]')}ack"
         )
@@ -223,6 +241,58 @@ def show_project(name):
             new_name = confirm_rename(name)
             if new_name:
                 name = new_name
+        elif choice in ("e", "edit", "notes"):
+            _header(f"Edit Notes: {name}")
+            current = meta.get("description", "")
+            print(f"  Current: {dim(current) if current else dim('(none)')}")
+            print()
+            new_desc = input("  New notes (blank to cancel): ").strip()
+            if new_desc:
+                try:
+                    api.update_description(name, new_desc)
+                    print(f"  {green('Saved.')}")
+                except Exception as ex:
+                    print(f"  {red('Failed:')} {ex}")
+            else:
+                print(f"  {yellow('Cancelled.')}")
+            input("  Press Enter...")
+        elif choice in ("f", "files"):
+            if not versions:
+                print(f"  {yellow('No versions yet.')}")
+                input("  Press Enter...")
+                continue
+            _header(f"Files: {name}")
+            for i, v in enumerate(versions[:10]):
+                suffix = "  (latest)" if i == 0 else ""
+                print(f"  {i + 1:>2}.  {v}{suffix}")
+            _rule()
+            raw = input(f"  Version [Enter = {versions[0]}]: ").strip()
+            if not raw:
+                tag = versions[0]
+            elif raw.isdigit():
+                idx = int(raw) - 1
+                tag = versions[idx] if 0 <= idx < len(versions) else versions[0]
+            else:
+                tag = versioning.ensure_prefix(raw)
+            _header(f"Files: {name} @ {tag}")
+            try:
+                manifest = api.get_manifest(name, tag)
+                if not manifest:
+                    print(f"  {red('Version not found.')}")
+                    input("  Press Enter...")
+                    continue
+                files = manifest.get("files", [])
+                _rule()
+                print(bold(f"  {'Path':<50}  {'Size':>9}"))
+                _rule()
+                for f in files:
+                    print(f"  {f['path'][:49]:<50}  {fmt_size(f['size']):>9}")
+                _rule()
+                total = sum(f["size"] for f in files)
+                print(f"  {len(files)} file(s)   total size: {fmt_size(total)}")
+            except Exception as ex:
+                print(f"  {red('Error:')} {ex}")
+            input("\n  Press Enter to return...")
         elif choice in ("d", "delete"):
             if confirm_delete(name):
                 return  # project gone; back to dashboard
@@ -308,13 +378,51 @@ def do_push(preset_project=None):
         input("  Press Enter...")
         return
 
+    local_state = fs.load_local_state(root_dir)
+
     # Project name
     if preset_project:
         project = preset_project
         print(f"  Project: {bold(project)}")
     else:
-        folder_name = os.path.basename(os.path.normpath(root_dir))
-        project = input(f"  Project name [{folder_name}]: ").strip() or folder_name
+        default_name = (
+            (local_state or {}).get("project_id")
+            or os.path.basename(os.path.normpath(root_dir))
+        )
+        project = input(f"  Project name [{default_name}]: ").strip() or default_name
+
+    # Scan + preview (before asking for tag/message — shows cost upfront)
+    print(f"\n  Scanning: {root_dir}")
+    pm_hooks.hook_pre_push(root_dir)
+    local_assets = fs.scan_directory(root_dir)
+
+    if not local_assets:
+        print(f"  {yellow('No files found (or all ignored).')}")
+        input("  Press Enter...")
+        return
+
+    print("  Checking server...")
+    try:
+        resp   = api.handshake(project, local_assets)
+        needed = set(resp.get("required_files", []))
+    except Exception as e:
+        print(f"  {red('Error:')} {e}")
+        input("  Press Enter...")
+        return
+
+    new_bytes = sum(f["size"] for f in local_assets if f["path"] in needed)
+    print()
+    _rule()
+    print(f"  New files:  {len(needed):>4}  ({fmt_size(new_bytes)} to upload)")
+    print(f"  Unchanged:  {len(local_assets) - len(needed):>4}  (already on server)")
+    print(f"  Total:      {len(local_assets):>4}  files in project")
+    _rule()
+    print()
+
+    if input("  Proceed with push? (Y/n): ").strip().lower() == "n":
+        print("  Aborted.")
+        input("  Press Enter...")
+        return
 
     # Smart versioning
     print("  Checking remote versions...")
@@ -354,26 +462,6 @@ def do_push(preset_project=None):
     default_msg = f"Update {tag}"
     msg    = input(f"  Commit message [{default_msg}]: ").strip() or default_msg
     author = SETTINGS.get("default_author", getpass.getuser())
-
-    # Scan
-    print(f"\n  Scanning: {root_dir}")
-    pm_hooks.hook_pre_push(root_dir)
-    local_assets = fs.scan_directory(root_dir)
-
-    if not local_assets:
-        print(f"  {yellow('No files found (or all ignored).')}")
-        input("  Press Enter...")
-        return
-
-    # Handshake
-    print("  Handshaking with server...")
-    try:
-        resp  = api.handshake(project, local_assets)
-        needed = set(resp.get("required_files", []))
-    except Exception as e:
-        print(f"  {red('Error:')} {e}")
-        input("  Press Enter...")
-        return
 
     # Upload
     if needed:
@@ -477,12 +565,14 @@ def do_pull(preset_project=None):
     target_dir = tdir_input if tdir_input else default_target
 
     # Conflict policy
+    cfg_policy = SETTINGS.get("conflict_policy", "backup")
+    _policy_num = {"backup": "1", "overwrite": "2", "skip": "3"}.get(cfg_policy, "1")
     print()
     print("  Conflict policy for changed files:")
-    print("    1. Backup (rename to .bak)  [default]")
+    print("    1. Backup (rename to .bak)")
     print("    2. Overwrite")
     print("    3. Skip (keep local)")
-    policy_choice = input("  Select [1-3]: ").strip()
+    policy_choice = input(f"  Select [1-3] [{_policy_num}={cfg_policy}]: ").strip() or _policy_num
     policy = {"2": "overwrite", "3": "skip"}.get(policy_choice, "backup")
 
     # Fetch manifest
@@ -704,6 +794,10 @@ def setup_cli():
     author     = ask    ("Author",         "default_author",        getpass.getuser())
     proj_root  = ask    ("Projects root", "default_projects_root",
                          existing.get("default_projects_root") or str(Path.home() / "Projects"))
+    raw_policy = ask    ("Conflict policy",    "conflict_policy",       "backup")
+    conflict_policy = raw_policy if raw_policy in ("backup", "overwrite", "skip") else "backup"
+    if raw_policy not in ("backup", "overwrite", "skip"):
+        print(f"  {yellow('Unknown — options: backup / overwrite / skip. Saved as backup.')}")
 
     new_cfg = {
         "server_ip":             server_ip,
@@ -711,6 +805,7 @@ def setup_cli():
         "filer_port":            filer_port,
         "default_author":        author,
         "default_projects_root": proj_root,
+        "conflict_policy":       conflict_policy,
     }
 
     # Preserve any extra keys the user may have set manually (e.g. client_path)

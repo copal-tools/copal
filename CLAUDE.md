@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-07 (after dashboard redesign: ProjectRow widget, search, server projects, open-folder).
+> Last updated: 2026-05-10 (after QoL-2: push preview, version file browser, storage stats, description editing, TTY-gated prints, conflict policy config).
 
 ---
 
@@ -87,7 +87,7 @@ E:\Development\Copal-VX\
 projects
   id          UUID  PK
   name        TEXT  UNIQUE  -- The CopalVX project name (e.g. "MyMovie")
-  description TEXT          -- Exists, never populated, reserved for Phase 6
+  description TEXT          -- Project notes; editable via PATCH /projects/{name}/description
   created_at  TIMESTAMP
 
 commits
@@ -122,19 +122,24 @@ Indexes (added Phase 4):
 
 ## Push flow (step by step)
 
-1. **pre-push hook** — `pm_hooks.hook_pre_push(root_dir)` runs `project sync-time` to flush time tracking into project.yaml before scan (non-fatal if pm not installed)
+Interactive mode (`do_push()`) and CLI mode (`push_cli`) share the same upload/commit logic but differ in ordering:
+
+**Interactive (TUI):**
+1. **pre-push hook** — `pm_hooks.hook_pre_push(root_dir)` flushes time tracking (non-fatal)
 2. **Scan** — `fs.scan_directory()` walks root dir, hashes every file (SHA-256), respects `.copalignore`
-3. **Handshake** — POST `/handshake` with full manifest; server returns list of hashes it doesn't already have
-4. **Get upload URLs** — POST `/get_upload_urls` for all needed files; server queries SeaweedFS master for FIDs
-5. **Upload** — `SyncEngine.execute_upload_plan()` uploads files in parallel (8 threads) via PUT to SeaweedFS filer `:8888`. Uses retry with exponential backoff (1s/2s/4s, max 3 attempts)
-6. **Confirm** — POST `/confirm_upload` for each uploaded file to record hash → FID mapping in PostgreSQL
-7. **Commit** — POST `/commit` with full file list. Server:
-   - Resolves/validates all hashes before writing anything
-   - Inserts commit + project_files in single atomic transaction
-   - Returns 422 if any hash missing, 409 if version tag already exists
-8. **Save state** — `fs.save_local_state()` writes `.copal/state.json` in root dir
-9. **Local registry** — `registry.register_project()` updates `~/.copal/projects.json`
-10. **post-push hook** — `pm_hooks.hook_post_push()` runs `project copalvx-update` to stamp project.yaml with CopalVX project name and version tag
+3. **Handshake** — POST `/handshake`; server returns list of hashes it doesn't have
+4. **Preview** — shows "N new files (X MB) / Y unchanged" and asks for confirmation before proceeding
+5. **Version tag + message** — only prompted after user confirms; new projects default `v1.0`, existing suggest next tag
+6. **ensure_project** — POST `/projects` (201 or 409-OK)
+7. **Get upload URLs** — POST `/get_upload_urls`; server queries SeaweedFS master for FIDs
+8. **Upload** — `SyncEngine.execute_upload_plan()` parallel (8 threads), PUT to SeaweedFS `:8888`, retry w/ backoff
+9. **Confirm** — POST `/confirm_upload` for each blob; server does HEAD verify before DB insert
+10. **Commit** — POST `/commit`; server validates all hashes, atomic transaction (422 on missing, 409 on dupe tag)
+11. **Save state** — `fs.save_local_state()` writes `.copal/state.json`
+12. **Local registry** — `registry.register_project()` updates `~/.copal/projects.json`
+13. **post-push hook** — `pm_hooks.hook_post_push()` stamps project.yaml with version tag
+
+**CLI (`push_cli`):** No preview step — all params supplied by caller. Steps 2→9→10→11→12→13.
 
 ---
 
@@ -189,6 +194,7 @@ Each machine has `~/.copal/config.json` (auto-created on first run):
     "filer_port": 8888,
     "default_author": "simon",
     "default_projects_root": "D:\\Projects",
+    "conflict_policy": "backup",
     "client_path": "E:\\Development\\Copal-VX\\client"
 }
 ```
@@ -200,6 +206,7 @@ Each machine has `~/.copal/config.json` (auto-created on first run):
 | `filer_port` | SeaweedFS filer port (default 8888) |
 | `default_author` | Used in commits when no author specified |
 | `default_projects_root` | Default root for project folders |
+| `conflict_policy` | Default pull conflict resolution: `backup` (rename to .bak), `overwrite`, or `skip`. Shown as default in `do_pull()` prompt; configurable via `copalvx setup`. |
 | `client_path` | **Required for pm-tui integration.** Absolute path to the CopalVX client directory where `pyproject.toml` lives. pm-tui uses this as `cwd` when running `uv run copalvx push/pull` as a subprocess. |
 
 **Config migration:** `config.py` now auto-persists any new default keys to disk. If a key exists in `DEFAULT_CONFIG` but not in the user's file, it gets written back on next client startup. This prevents future "missing key" issues when new config keys are added.
@@ -243,7 +250,7 @@ Do not change replication to `001` without adding a second volume server.
 
 ---
 
-## Completed phases (as of 2026-05-06)
+## Completed phases (as of 2026-05-10)
 
 | Phase | What | Files changed |
 |-------|------|---------------|
@@ -261,6 +268,7 @@ Do not change replication to `001` without adding a second volume server.
 | QoL-pm | pm-tui project management: CopalVXRenameModal ([N]) renames CopalVX project + updates project.yaml; CopalVXDeleteModal ([X]) deletes from server; DeleteProjectModal ([D]) deletes PM project from registry, optional local folder deletion, optional CopalVX server deletion. _NNN folder suffix is now opt-in checkbox in InitScreen (was mandatory). Scrolling fixed: flattened ScrollableContainer(Vertical) → ScrollableContainer(id="detail-body") + height:1fr. Added rename_project()/delete_project() to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 | QoL-pm-2 | Template system: user-defined templates stored in templates.json (DATA_DIR). Each template defines preset metadata + folder structure. TemplateScreen ([T] from dashboard) with [N]/[E]/[D] for full CRUD. EditTemplateModal for create/edit. InitScreen RadioSet built dynamically from loaded templates; _do_create() reads folder list from template (supports nested paths). Form scrolling fixed for InitScreen and EditTemplateModal (inner ScrollableContainer with max-height: 55vh, buttons outside scroll area). CVX update indicator: dashboard background-polls CopalVX server every 60s for each project's latest version; shows yellow "↑ vX.Y" in name cell when server version differs from local project.yaml last_push_version. | ProjectRegistry config.py, pm.py, tui_app.py |
 | Dashboard redesign | Replaced DataTable with scrollable list of ProjectRow widgets (height 3). Each row shows project name, Open Folder button, ▲ push, ▼ pull buttons. Server-only CVX projects shown greyed out below a Rule separator (▼ pull only). Search Input filters by name/ID in real-time; Checkbox toggles server project inclusion. Arrow-key navigation between rows, Enter opens detail. Push/pull work directly from dashboard rows. _cvx_next_tag() and _cvx_stream() extracted to module-level; list_projects() added to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
+| QoL-2 | **B:** fs.py + sync.py informational prints TTY-gated (`_verbose = sys.stdout.isatty()`); ⚠️ warnings still unconditional. **A:** `do_push()` reads `.copal/state.json` to pre-fill project name default (falls back to folder basename). **C:** `conflict_policy` added to `DEFAULT_CONFIG` + `setup_cli` + shown as pre-selected default in `do_pull()` prompt. **D:** `projects.description` returned by metadata endpoint; `PATCH /projects/{name}/description` endpoint added; `[E]dit notes` in TUI project detail. **E:** `[F]iles` browser in project detail — pick a version, see full file list with per-file sizes + total. **F:** `total_storage_bytes` (unique blob bytes across all versions) added to `GET /projects`. **G:** `GET /server/stats` endpoint + dashboard stats line (projects / versions / blobs / bytes). **H:** `do_push()` reordered: scan+handshake+preview shown before tag/message prompts. | main.py, api.py, config.py, fs.py, sync.py, tui.py |
 
 ---
 
@@ -269,10 +277,11 @@ Do not change replication to `001` without adding a second volume server.
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/projects` | Create project (201/409) |
-| GET | `/projects` | List all projects with stats |
+| GET | `/projects` | List all projects with stats (includes `total_storage_bytes` per project) |
 | PATCH | `/projects/{name}` | Rename project (body: `{new_name: str}`; 404/409) |
+| PATCH | `/projects/{name}/description` | Update project notes (body: `{description: str}`; 404) |
 | GET | `/projects/{name}/versions` | List versions (newest first) |
-| GET | `/projects/{name}/metadata` | Project detail (includes `authors` list) |
+| GET | `/projects/{name}/metadata` | Project detail (includes `authors`, `description`) |
 | DELETE | `/projects/{name}` | Delete project (body: `{delete_orphan_files: bool}`) |
 | POST | `/handshake` | Compare client manifest with server |
 | POST | `/get_upload_urls` | Request SeaweedFS FIDs for upload |
@@ -280,12 +289,13 @@ Do not change replication to `001` without adding a second volume server.
 | POST | `/commit` | Create version (atomic, validates all hashes) |
 | GET | `/checkout/{name}/{tag}` | Get file manifest for a version |
 | GET | `/health` | Service health (DB + SeaweedFS connectivity) |
+| GET | `/server/stats` | Server-wide totals: projects, versions, unique blobs, bytes stored |
 
 ---
 
-## Next up: TUI redesign (decided 2026-05-06)
+## Feature history and roadmap
 
-**Design decision:** CopalVX TUI becomes a service dashboard. Push/pull moves to pm-tui as the primary interface. CopalVX TUI keeps push/pull as a backup (standalone use without pm).
+**Design decision (2026-05-06):** CopalVX TUI becomes a service dashboard. Push/pull moves to pm-tui as the primary interface. CopalVX TUI keeps push/pull as a backup (standalone use without pm).
 
 ### Part 2 — pm-tui push/pull integration (COMPLETE)
 
@@ -316,7 +326,7 @@ Rewrote `client/tui.py` as a terminal dashboard:
 
 **Navigation:**
 - Dashboard: `[1-N]` open project → `[P]` push → `[L]` pull → `[R]` refresh → `[Q]` quit
-- Project detail: `[P]` push → `[L]` pull → `[N]` rename → `[D]` delete → `[B]` back
+- Project detail: `[P]` push → `[L]` pull → `[N]` rename → `[E]` edit notes → `[F]` files → `[D]` delete → `[B]` back
 
 ### QoL additions (COMPLETE)
 
@@ -431,6 +441,85 @@ Footer
 | `D` | Delete selected |
 | `Esc` | Back |
 
+### QoL-2 additions (COMPLETE, 2026-05-10)
+
+**fs.py + sync.py — TTY-gated verbose prints (B):**
+- `_verbose = sys.stdout.isatty()` module-level flag in both files
+- Informational prints (`🔍 Scanning directory`, `ℹ️ Loaded .copalignore`, `🔍 SyncEngine: Scanning`, `ℹ️ Indexed N local files`) gated on `_verbose` — silent when stdout is piped (CLI subprocess mode)
+- Warning prints (`⚠️`) remain unconditional — always surface errors
+
+**config.py — `conflict_policy` default (C):**
+- Added `"conflict_policy": "backup"` to `DEFAULT_CONFIG`
+- Existing users get it auto-written on next startup via the config migration in `load_config()`
+- `do_pull()` reads `SETTINGS.get("conflict_policy")` and shows it pre-selected in the prompt: `Select [1-3] [1=backup]:`
+- `setup_cli()` exposes it as a configurable field
+
+**tui.py `do_push()` — pre-fill from local state (A):**
+- After `root_dir` is resolved, `fs.load_local_state(root_dir)` is called
+- Default project name: `state["project_id"]` → folder basename (in that priority)
+- No change when `preset_project` is set (called from project detail screen)
+
+**tui.py `do_push()` — preview before tag/message (H):**
+- Scan + handshake now run immediately after project name confirmed, before any version/message prompts
+- Preview block shows: `New files: N (X MB to upload) / Unchanged: Y / Total: Z`
+- `Proceed with push? (Y/n)` — abort here to avoid entering tag/message for nothing
+- Version tag and commit message prompts appear only after user confirms
+
+**server/app/main.py + client/api.py — storage stats (F + G):**
+- `GET /projects` now includes `total_storage_bytes` per project (sum of unique blob bytes across all versions — deduplication-aware)
+- `GET /server/stats` — new endpoint: `{total_projects, total_versions, total_unique_blobs, total_storage_bytes}`
+- Dashboard stats line: `3 project(s) | 12 version(s) | 4.2 GB stored | 847 unique blob(s)` (fails silently if unreachable)
+- Project table: Size column added (Project column trimmed 22→18 chars to fit 80-col terminal)
+
+**server/app/main.py + client/api.py + tui.py — description (D):**
+- `GET /projects/{name}/metadata` now returns `description` field (empty string for NULL)
+- `PATCH /projects/{name}/description` — new endpoint; 404 if project not found
+- `api.update_description(project_name, description)` in client
+- `show_project()` shows `Notes:` line if description is non-empty
+- `[E]dit notes` in project detail: shows current notes, prompts for new text
+
+**tui.py `show_project()` — version file browser (E):**
+- `[F]iles` key in project detail menu
+- Shows version list, user selects by number or types a tag
+- Calls `api.get_manifest(name, tag)` and renders file list: path, size (right-aligned), total at bottom
+- No server changes — reuses existing checkout endpoint
+
+**tui.py `show_project()` — refactor:**
+- `meta` and `versions` are now fetched and cached at the top of each loop iteration
+- Both available in all choice handlers (needed for `[E]` description edit and `[F]` version selection)
+
+---
+
+### Phase I — Version Diff (NEXT)
+
+**Goal:** Let the user see what changed between any two versions before pulling.
+
+**Server endpoint:** `GET /projects/{name}/diff/{v1}/{v2}`
+
+Returns:
+```json
+{
+  "added":     [{"path": "...", "size": N}],
+  "removed":   [{"path": "...", "size": N}],
+  "changed":   [{"path": "...", "old_size": N, "new_size": N}],
+  "unchanged_count": N
+}
+```
+
+Implementation: join `project_files` for both commit IDs on `file_path`; compare `asset_id` (or `file_hash`) to classify. All data is already in the DB — no SeaweedFS reads.
+
+**Client api.py:** `get_diff(project, v1, v2)` — wraps the new endpoint.
+
+**TUI:** `[D]iff` option in the `[F]iles` browser (or as a standalone key in project detail). User picks two versions, sees the diff rendered with `+added`, `-removed`, `~changed` prefixes.
+
+**Why this matters:** Enables "what changed in this push?" at a glance. Also the prerequisite for:
+- Smart per-file conflict resolution during pull (Phase C): if a file hasn't changed between the locally-held version and the target pull version, it can be safely overwritten
+- Selective pull (Phase J): user can see the diff first, then decide which subfolder to pull
+
+**Dependency order for C/I/J:** Implement I first (pure server + API). Then J (client-only path prefix filter). Then C (uses both: per-file conflict mode derived from diff data).
+
+---
+
 ### Phase 7 — Authentication (LOW PRIORITY)
 
 LAN-only system, not urgent. When needed:
@@ -499,7 +588,7 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 
 4. **get_versions() returns `[]` for genuine 404 (new project), raises ConnectionError for network failures.** This was a bug: previously it swallowed all errors and returned `[]`, making the TUI show "New Project" even when the server was down.
 
-5. **projects.description is populated by POST /projects** (added in Phase 6). Older projects created before Phase 6 have NULL description — safe to ignore.
+5. **projects.description** is stored in the DB and editable via `PATCH /projects/{name}/description`. `GET /projects/{name}/metadata` returns it as `""` when NULL. Older projects have NULL — `get_project_metadata` normalises this, no action needed.
 
 6. **The client registry (`~/.copal/projects.json`) is separate from ProjectRegistry.** It's just a "recently used" list for the TUI's convenience. Max 20 entries.
 

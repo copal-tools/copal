@@ -1,8 +1,12 @@
 import os
+import sys
 import hashlib
 import fnmatch
 import json
 import subprocess
+
+_verbose = sys.stdout.isatty()
+
 
 def calculate_hash(filepath):
     """Calculates SHA256 hash of a local file."""
@@ -31,7 +35,8 @@ def load_ignore_rules(root_dir):
                     line = line.strip()
                     if line and not line.startswith("#"):
                         rules.add(line)
-            print("ℹ️  Loaded .copalignore rules.")
+            if _verbose:
+                print("ℹ️  Loaded .copalignore rules.")
         except Exception as e:
             print(f"⚠️  Error reading .copalignore: {e}")
             
@@ -58,7 +63,8 @@ def should_ignore(path, root_dir, rules):
 def scan_directory(root_dir):
     """Recursively scans a directory with .copalignore support."""
     file_list = []
-    print(f"🔍 Scanning directory: {root_dir}")
+    if _verbose:
+        print(f"🔍 Scanning directory: {root_dir}")
     
     # Load rules once
     ignore_rules = load_ignore_rules(root_dir)

@@ -116,6 +116,9 @@ class RenameProjectRequest(BaseModel):
 class BulkConfirmRequest(BaseModel):
     files: List[ConfirmUploadRequest]
 
+class UpdateDescriptionRequest(BaseModel):
+    description: str
+
 
 # --- ENDPOINTS ---
 
@@ -435,7 +438,7 @@ def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
     # LEFT JOIN so a project that exists but has no commits yet still returns a row
     # (commit columns will be NULL). INNER JOIN was causing spurious 404s on new projects.
     query_info = text("""
-        SELECT p.id, p.created_at, c.id, c.version_tag, c.author_name, c.created_at, c.message
+        SELECT p.id, p.created_at, p.description, c.id, c.version_tag, c.author_name, c.created_at, c.message
         FROM projects p
         LEFT JOIN commits c ON p.id = c.project_id
         WHERE p.name = :name
@@ -448,7 +451,7 @@ def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
 
-    project_id, p_created, commit_id, tag, author, c_created, msg = row
+    project_id, p_created, description, commit_id, tag, author, c_created, msg = row
 
     # commit_id is None when the project exists but has never been pushed to
     total_bytes = 0
@@ -469,6 +472,7 @@ def get_project_metadata(project_name: str, db: Session = Depends(get_db)):
 
     return {
         "project": project_name,
+        "description": description or "",
         "latest_version": tag,
         "author": author,
         "authors": [r[0] for r in authors_rows],
@@ -512,7 +516,14 @@ def list_projects(db: Session = Depends(get_db)):
                 ORDER BY c2.created_at DESC LIMIT 1) AS latest_version,
                (SELECT c2.author_name FROM commits c2
                 WHERE c2.project_id = p.id
-                ORDER BY c2.created_at DESC LIMIT 1) AS last_author
+                ORDER BY c2.created_at DESC LIMIT 1) AS last_author,
+               (SELECT COALESCE(SUM(a.size_bytes), 0)
+                FROM assets a
+                WHERE a.id IN (
+                    SELECT DISTINCT pf.asset_id FROM project_files pf
+                    JOIN commits c3 ON pf.commit_id = c3.id
+                    WHERE c3.project_id = p.id
+                )) AS total_storage_bytes
         FROM projects p
         LEFT JOIN commits c ON c.project_id = p.id
         GROUP BY p.id
@@ -528,9 +539,27 @@ def list_projects(db: Session = Depends(get_db)):
             "last_push": r[4].isoformat() if r[4] else None,
             "latest_version": r[5],
             "last_author": r[6],
+            "total_storage_bytes": r[7],
         }
         for r in rows
     ]
+
+
+@app.get("/server/stats")
+def server_stats(db: Session = Depends(get_db)):
+    row = db.execute(text("""
+        SELECT
+            (SELECT COUNT(*) FROM projects)                         AS total_projects,
+            (SELECT COUNT(*) FROM commits)                          AS total_versions,
+            (SELECT COUNT(*) FROM assets)                           AS total_unique_blobs,
+            (SELECT COALESCE(SUM(size_bytes), 0) FROM assets)       AS total_storage_bytes
+    """)).fetchone()
+    return {
+        "total_projects":      row[0],
+        "total_versions":      row[1],
+        "total_unique_blobs":  row[2],
+        "total_storage_bytes": row[3],
+    }
 
 
 @app.patch("/projects/{project_name}")
@@ -555,6 +584,20 @@ def rename_project(project_name: str, request: RenameProjectRequest, db: Session
         db.rollback()
         logger.error("Rename '%s' failed: %s", project_name, e)
         raise HTTPException(status_code=500, detail="Rename failed.")
+
+
+@app.patch("/projects/{project_name}/description")
+def update_description(project_name: str, request: UpdateDescriptionRequest, db: Session = Depends(get_db)):
+    logger.info("Updating description for: %s", project_name)
+    result = db.execute(
+        text("UPDATE projects SET description = :desc WHERE name = :name RETURNING id"),
+        {"desc": request.description, "name": project_name}
+    )
+    if not result.fetchone():
+        db.rollback()
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
+    db.commit()
+    return {"status": "updated", "project": project_name}
 
 
 @app.delete("/projects/{project_name}")

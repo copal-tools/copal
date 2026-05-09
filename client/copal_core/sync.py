@@ -1,9 +1,13 @@
 import os
+import sys
 import shutil
 import time
 from . import fs
 from . import transport
 import concurrent.futures
+
+_verbose = sys.stdout.isatty()
+
 
 class SyncAction:
     """Enumeration of possible actions to take on a file."""
@@ -27,7 +31,8 @@ class SyncEngine:
         plan = []
         
         # --- STEP 1: SCAN LOCAL REALITY ---
-        print("🔍 SyncEngine: Scanning local drive for smart optimizations...")
+        if _verbose:
+            print("🔍 SyncEngine: Scanning local drive for smart optimizations...")
         local_files = fs.scan_directory(local_root)
         
         # Build a "Hash Map" to find files regardless of their name/location.
@@ -39,7 +44,8 @@ class SyncEngine:
                 local_hash_map[h] = []
             local_hash_map[h].append(f['full_local_path'])
 
-        print(f"ℹ️  Indexed {len(local_files)} local files.")
+        if _verbose:
+            print(f"ℹ️  Indexed {len(local_files)} local files.")
 
         # --- STEP 2: ANALYZE SERVER REQUIREMENTS ---
         for asset in server_manifest_files:
