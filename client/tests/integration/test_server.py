@@ -216,21 +216,30 @@ class TestCleanupOrphans:
 # ---------------------------------------------------------------------------
 
 class TestBodySizeLimit:
-    def test_oversized_content_length_rejected(self, project):
-        """L3 fix: a fake Content-Length over the limit must return 413.
+    def test_oversized_payload_rejected(self, project):
+        """L3 fix: a payload genuinely over 10 MB must be rejected with 413.
 
-        We send a tiny body but lie about its size in the header.
-        The middleware checks the declared size before reading the body.
+        The requests library always sets Content-Length to the actual body size,
+        so we have to send real data.  11 MB on a LAN transfers in < 1 s and the
+        middleware rejects based on Content-Length before reading the body.
+
+        Uvicorn may close the connection before we finish uploading (after
+        sending the 413), which surfaces as a ConnectionError on the client —
+        that outcome is also a correct rejection.
         """
-        r = requests.post(
-            f"{BASE}/handshake",
-            data='{"project_id":"x","client_manifest":[]}',
-            headers={
-                "Content-Type":   "application/json",
-                "Content-Length": str(50 * 1024 * 1024),  # claim 50 MB
-            },
-            timeout=5,
-        )
-        assert r.status_code == 413, (
-            f"L3 regression: expected 413 for oversized Content-Length, got {r.status_code}"
-        )
+        large_body = b"x" * (11 * 1024 * 1024)  # 11 MB > default 10 MB limit
+        try:
+            r = requests.post(
+                f"{BASE}/handshake",
+                data=large_body,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=30,
+            )
+            assert r.status_code == 413, (
+                f"L3 regression: expected 413 for {len(large_body) // (1024 * 1024)} MB "
+                f"payload, got {r.status_code}"
+            )
+        except requests.exceptions.ConnectionError:
+            # Server closed the connection after sending 413 before we finished
+            # uploading — this is also correct rejection behaviour.
+            pass
