@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-10 (after QoL-2: push preview, version file browser, storage stats, description editing, TTY-gated prints, conflict policy config).
+> Last updated: 2026-05-10 (after QoL-2 + security audit: path traversal, SQL injection, retry hardening, body size limit, bulk confirm endpoint, 48-test automated suite).
 
 ---
 
@@ -66,6 +66,13 @@ E:\Development\Copal-VX\
 │       ├── versioning.py              ← Tag parsing (v1.0 → v1.1, validate, etc.)
 │       ├── registry.py                ← Local recent-projects list (~/.copal/projects.json)
 │       └── pm_hooks.py                ← ProjectRegistry integration (see below)
+│   └── tests/
+│       ├── unit/
+│       │   ├── test_sync.py           ← C1 path-traversal guard (6 tests)
+│       │   ├── test_transport.py      ← M5 hash-mismatch retry (5 tests)
+│       │   └── test_versioning.py     ← ensure_prefix / increment_tag / validate_push_tag (16 tests)
+│       └── integration/
+│           └── test_server.py         ← Live API tests; auto-skipped if server unreachable (21 tests)
 │
 ├── server/
 │   ├── docker-compose.yml             ← All three containers
@@ -269,6 +276,7 @@ Do not change replication to `001` without adding a second volume server.
 | QoL-pm-2 | Template system: user-defined templates stored in templates.json (DATA_DIR). Each template defines preset metadata + folder structure. TemplateScreen ([T] from dashboard) with [N]/[E]/[D] for full CRUD. EditTemplateModal for create/edit. InitScreen RadioSet built dynamically from loaded templates; _do_create() reads folder list from template (supports nested paths). Form scrolling fixed for InitScreen and EditTemplateModal (inner ScrollableContainer with max-height: 55vh, buttons outside scroll area). CVX update indicator: dashboard background-polls CopalVX server every 60s for each project's latest version; shows yellow "↑ vX.Y" in name cell when server version differs from local project.yaml last_push_version. | ProjectRegistry config.py, pm.py, tui_app.py |
 | Dashboard redesign | Replaced DataTable with scrollable list of ProjectRow widgets (height 3). Each row shows project name, Open Folder button, ▲ push, ▼ pull buttons. Server-only CVX projects shown greyed out below a Rule separator (▼ pull only). Search Input filters by name/ID in real-time; Checkbox toggles server project inclusion. Arrow-key navigation between rows, Enter opens detail. Push/pull work directly from dashboard rows. _cvx_next_tag() and _cvx_stream() extracted to module-level; list_projects() added to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 | QoL-2 | **B:** fs.py + sync.py informational prints TTY-gated (`_verbose = sys.stdout.isatty()`); ⚠️ warnings still unconditional. **A:** `do_push()` reads `.copal/state.json` to pre-fill project name default (falls back to folder basename). **C:** `conflict_policy` added to `DEFAULT_CONFIG` + `setup_cli` + shown as pre-selected default in `do_pull()` prompt. **D:** `projects.description` returned by metadata endpoint; `PATCH /projects/{name}/description` endpoint added; `[E]dit notes` in TUI project detail. **E:** `[F]iles` browser in project detail — pick a version, see full file list with per-file sizes + total. **F:** `total_storage_bytes` (unique blob bytes across all versions) added to `GET /projects`. **G:** `GET /server/stats` endpoint + dashboard stats line (projects / versions / blobs / bytes). **H:** `do_push()` reordered: scan+handshake+preview shown before tag/message prompts. | main.py, api.py, config.py, fs.py, sync.py, tui.py |
+| Security audit | Full codebase audit → 15 findings (2 critical, 4 high, 4 medium, 5 low). Fixed: **C1** path traversal in SyncEngine, **C2** broken `IN :tuple` → `= ANY(:list)` (silent multi-file failure), **H1** state saved only on clean pull, **H2** LEFT JOIN in metadata (no 404 on zero-commit project), **H3** `POST /admin/cleanup-orphans` endpoint, **H4** silent SeaweedFS blob-leak on delete replaced with logged warnings, **L2** removed leaking `client_id` from handshake, **L3** 10 MB request body limit middleware, **L6** server-side version tag regex guard, **M1** registry write hardened with mkdir+try/except, **M3** `POST /confirm_uploads` bulk endpoint (N+1 → 1 round-trip), **M4** dedup by hash before upload, **M5** hash-mismatch triggers retry (not immediate failure), **M6** SeaweedFS filer port via env var, **M7** `cls`/`clear` on Windows/Unix. 48 automated tests added (27 unit, 21 integration). | sync.py, transport.py, registry.py, tui.py, main.py, api.py, .env.example, pyproject.toml, tests/ |
 
 ---
 
@@ -549,6 +557,57 @@ cd E:\Development\Copal-VX\client
 uv run copalvx         # recommended (requires uv sync first)
 uv run python tui.py   # also works
 ```
+
+---
+
+## Testing
+
+### Running the suite
+
+```powershell
+cd E:\Development\Copal-VX\client
+
+# All tests (unit + integration)
+uv run pytest -v
+
+# Unit tests only (no server needed)
+uv run pytest tests/unit/ -v
+
+# Integration tests only (server must be up)
+uv run pytest tests/integration/ -v
+```
+
+**48 tests total — 27 unit, 21 integration.**
+Integration tests auto-skip if the server is unreachable (`_ensure_server` autouse fixture tries `GET /health` with a 4 s timeout and calls `pytest.skip` on failure).
+
+### Test files
+
+| File | What it tests | Fixture / requirement |
+|------|---------------|----------------------|
+| `tests/unit/test_sync.py` | **C1** — `SyncEngine.generate_plan()` path-traversal guard: `../` traversal, absolute paths, Windows paths, mixed manifests, safe `a/../b` normalization | `tmp_path` only — no network |
+| `tests/unit/test_transport.py` | **M5** — `transport.download_file()` hash-mismatch retry: success, mismatch triggers retry, exhausted retries, backoff schedule, 404 not retried | Mocks `transport.session.get` + `_hash_file` + `time.sleep` |
+| `tests/unit/test_versioning.py` | `ensure_prefix`, `increment_tag` (parametrized), `validate_push_tag` — all tag parsing edge cases | Pure unit — no I/O |
+| `tests/integration/test_server.py` | Live API: **H2** (zero-commit metadata), **C2** (multi-file handshake), **M3** (bulk confirm), **L6** (tag validation), **H3** (cleanup-orphans), **L3** (body size limit), `/health` endpoint | Requires `docker-compose up -d` |
+
+### Integration test design
+
+- A module-scoped `project` fixture creates a UUID-named project (`__pytest_<hex>__`) before tests run and deletes it (including orphan blobs) after — leaves the server clean.
+- `COPALVX_SERVER_URL` env var overrides the default `http://192.168.178.161:8005`.
+- `TestBodySizeLimit` sends a genuine 11 MB payload (`b"x" * 11_534_336`) — `requests` always sets real `Content-Length` so the fake-header approach doesn't work. Catches `ConnectionError` as also-valid rejection (server may close the socket after sending 413 mid-upload).
+
+### Dev dependencies
+
+Declared in `client/pyproject.toml`:
+```toml
+[tool.uv]
+dev-dependencies = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-q"
+```
+
+`uv sync` installs them automatically. `uv run pytest` picks up the config without any extra flags.
 
 ---
 
