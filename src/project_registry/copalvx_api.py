@@ -142,8 +142,39 @@ def run_push(project: str, tag: str, path: str, message: str = "", author: str =
     return _popen(cmd, cwd)
 
 
-def run_pull(project: str, tag: str, target: str, policy: str = "backup") -> subprocess.Popen:
+def get_diff(project_name: str, v1: str, v2: str) -> dict | None:
+    """Returns diff dict {v1, v2, added, removed, changed, unchanged_count}, or None on error."""
+    try:
+        url = f"{_base_url()}/projects/{project_name}/diff/{v1}/{v2}"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def extract_changed_folders(diff_result: dict) -> list[dict]:
+    """Return [{folder: str, count: int}] sorted by path.
+
+    folder = immediate parent dir of each changed file (empty string = project root).
+    """
+    from collections import Counter
+    counts: Counter = Counter()
+    for cat in ("added", "removed", "changed"):
+        for f in diff_result.get(cat, []):
+            path   = f["path"].replace("\\", "/")
+            parent = path.rsplit("/", 1)[0] if "/" in path else ""
+            counts[parent] += 1
+    return sorted(
+        [{"folder": k, "count": v} for k, v in counts.items()],
+        key=lambda x: x["folder"],
+    )
+
+
+def run_pull(project: str, tag: str, target: str, policy: str = "backup",
+             prefixes: list[str] | None = None) -> subprocess.Popen:
     """Starts a non-interactive pull subprocess. Returns the Popen object."""
     args = ["pull", project, tag, target, "--policy", policy]
+    for p in (prefixes or []):
+        args += ["--prefix", p]
     cmd, cwd = _resolve_copalvx(args)
     return _popen(cmd, cwd)

@@ -685,17 +685,42 @@ class DashboardScreen(Screen):
         def on_confirm(result: dict | None) -> None:
             if result is None:
                 return
-            tag      = result["tag"]
-            progress = CopalVXProgressModal(f"Pull: {cvx_name} @ {tag}")
-            self.app.push_screen(progress)
-            def _run():
-                try:
-                    proc = copalvx_api.run_pull(cvx_name, tag, path)
-                    _cvx_stream(proc, progress, self.app, self._refresh_data)
-                except Exception as e:
-                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
-                    self.app.call_from_thread(progress.mark_done, False)
-            threading.Thread(target=_run, daemon=True).start()
+            tag           = result["tag"]
+            local_version = project.get("cvx_local_version")
+
+            def _fetch_diff() -> None:
+                folders = []
+                if local_version and local_version != tag:
+                    try:
+                        diff = copalvx_api.get_diff(cvx_name, local_version, tag)
+                        if diff:
+                            folders = copalvx_api.extract_changed_folders(diff)
+                    except Exception:
+                        pass
+                if folders:
+                    modal = SelectivePullModal(cvx_name, tag, folders)
+                    self.app.call_from_thread(self.app.push_screen, modal, on_folder_select)
+                else:
+                    self.app.call_from_thread(_start_pull, [])
+
+            def on_folder_select(sel: dict | None) -> None:
+                if sel is None:
+                    return
+                _start_pull(sel["prefixes"])
+
+            def _start_pull(prefixes: list[str]) -> None:
+                progress = CopalVXProgressModal(f"Pull: {cvx_name} @ {tag}")
+                self.app.push_screen(progress)
+                def _run() -> None:
+                    try:
+                        proc = copalvx_api.run_pull(cvx_name, tag, path, prefixes=prefixes)
+                        _cvx_stream(proc, progress, self.app, self._refresh_data)
+                    except Exception as e:
+                        self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                        self.app.call_from_thread(progress.mark_done, False)
+                threading.Thread(target=_run, daemon=True).start()
+
+            threading.Thread(target=_fetch_diff, daemon=True).start()
 
         self.app.push_screen(CopalVXPullModal(cvx_name, versions, path), on_confirm)
 
@@ -798,6 +823,72 @@ class CopalVXPullModal(ModalScreen):
             sel = self.query_one(Select)
             if sel.value:
                 self.dismiss({"tag": sel.value})
+            event.stop()
+
+
+class SelectivePullModal(ModalScreen):
+    """Checkbox list of changed folders for a selective pull."""
+
+    DEFAULT_CSS = """
+    SelectivePullModal { align: center middle; }
+    #sel-pull-box {
+        width: 70;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #sel-pull-scroll { max-height: 15; margin: 1 0; }
+    #sel-pull-buttons { margin-top: 1; }
+    #sel-pull-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, project_name: str, tag: str, folders: list[dict]) -> None:
+        super().__init__()
+        self._project_name = project_name
+        self._tag          = tag
+        self._folders      = folders
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sel-pull-box"):
+            yield Label(f"[bold]Selective Pull:[/bold] {self._project_name} @ {self._tag}")
+            yield Rule()
+            yield Label("Changed folders — uncheck what you don't need:")
+            with ScrollableContainer(id="sel-pull-scroll"):
+                for i, f in enumerate(self._folders):
+                    label = f["folder"] if f["folder"] else "(root)"
+                    yield Checkbox(
+                        f"{label}  ({f['count']} changed)",
+                        value=True,
+                        id=f"chk-folder-{i}",
+                    )
+            with Horizontal(id="sel-pull-buttons"):
+                yield Button("Pull Selected", variant="primary", id="btn-pull-sel")
+                yield Button("Pull Full Version", id="btn-pull-full")
+                yield Button("Cancel", variant="error", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#btn-pull-sel").focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-cancel":
+            self.dismiss(None)
+        elif bid == "btn-pull-full":
+            self.dismiss({"full": True, "prefixes": []})
+        elif bid == "btn-pull-sel":
+            prefixes = []
+            for i, f in enumerate(self._folders):
+                if self.query_one(f"#chk-folder-{i}", Checkbox).value:
+                    prefixes.append(f["folder"])
+            if not prefixes:
+                self.notify("Select at least one folder.", severity="warning")
+                return
+            self.dismiss({"full": False, "prefixes": prefixes})
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
             event.stop()
 
 
@@ -1396,8 +1487,9 @@ class ProjectDetailScreen(Screen):
         )
 
     def action_pull_copalvx(self) -> None:
-        project_name = self._cvx_project_name()
-        project_path = self._project.get("path", "")
+        project_name  = self._cvx_project_name()
+        project_path  = self._project.get("path", "")
+        local_version = self._data.get("copalvx", {}).get("last_push_version")
 
         versions = copalvx_api.get_versions(project_name)
         if not versions:
@@ -1409,18 +1501,39 @@ class ProjectDetailScreen(Screen):
                 return
             tag = result["tag"]
 
-            progress = CopalVXProgressModal(f"Pull: {project_name} @ {tag}")
-            self.app.push_screen(progress)
+            def _fetch_diff() -> None:
+                folders = []
+                if local_version and local_version != tag:
+                    try:
+                        diff = copalvx_api.get_diff(project_name, local_version, tag)
+                        if diff:
+                            folders = copalvx_api.extract_changed_folders(diff)
+                    except Exception:
+                        pass
+                if folders:
+                    modal = SelectivePullModal(project_name, tag, folders)
+                    self.app.call_from_thread(self.app.push_screen, modal, on_folder_select)
+                else:
+                    self.app.call_from_thread(_start_pull, [])
 
-            def _run():
-                try:
-                    proc = copalvx_api.run_pull(project_name, tag, project_path)
-                    self._cvx_stream_subprocess(proc, progress)
-                except Exception as e:
-                    self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
-                    self.app.call_from_thread(progress.mark_done, False)
+            def on_folder_select(sel: dict | None) -> None:
+                if sel is None:
+                    return
+                _start_pull(sel["prefixes"])
 
-            threading.Thread(target=_run, daemon=True).start()
+            def _start_pull(prefixes: list[str]) -> None:
+                progress = CopalVXProgressModal(f"Pull: {project_name} @ {tag}")
+                self.app.push_screen(progress)
+                def _run() -> None:
+                    try:
+                        proc = copalvx_api.run_pull(project_name, tag, project_path, prefixes=prefixes)
+                        self._cvx_stream_subprocess(proc, progress)
+                    except Exception as e:
+                        self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                        self.app.call_from_thread(progress.mark_done, False)
+                threading.Thread(target=_run, daemon=True).start()
+
+            threading.Thread(target=_fetch_diff, daemon=True).start()
 
         self.app.push_screen(
             CopalVXPullModal(project_name, versions, project_path),
@@ -1542,6 +1655,7 @@ class PMApp(App):
     }
     #project-list {
         height: 1fr;
+        padding-top: 1;
     }
     #detail-body {
         height: 1fr;
