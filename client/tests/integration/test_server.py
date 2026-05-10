@@ -243,3 +243,70 @@ class TestBodySizeLimit:
             # Server closed the connection after sending 413 before we finished
             # uploading — this is also correct rejection behaviour.
             pass
+
+
+# ---------------------------------------------------------------------------
+# Version diff — Phase I
+# ---------------------------------------------------------------------------
+
+class TestVersionDiff:
+    V1 = "vd1.0"
+    V2 = "vd2.0"
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _commits(self, project):
+        """Create two empty version commits so diff tests have real tags to query."""
+        for tag in (self.V1, self.V2):
+            r = requests.post(f"{BASE}/commit", json={
+                "project_id":  project,
+                "version_tag": tag,
+                "message":     f"pytest diff fixture {tag}",
+                "author":      "pytest",
+                "files":       [],
+            }, timeout=5)
+            assert r.status_code in (200, 409), f"Could not create commit {tag}: {r.text}"
+
+    def test_diff_nonexistent_project_returns_404(self):
+        r = requests.get(
+            f"{BASE}/projects/__no_such_project__/diff/v1.0/v2.0", timeout=5
+        )
+        assert r.status_code == 404
+
+    def test_diff_nonexistent_version_returns_404(self, project):
+        r = requests.get(
+            f"{BASE}/projects/{project}/diff/{self.V1}/__no_such_tag__", timeout=5
+        )
+        assert r.status_code == 404
+
+    def test_diff_response_structure(self, project):
+        r = requests.get(
+            f"{BASE}/projects/{project}/diff/{self.V1}/{self.V2}", timeout=5
+        )
+        assert r.status_code == 200
+        data = r.json()
+        for key in ("v1", "v2", "added", "removed", "changed", "unchanged_count"):
+            assert key in data, f"Missing key '{key}' in diff response"
+        assert isinstance(data["added"], list)
+        assert isinstance(data["removed"], list)
+        assert isinstance(data["changed"], list)
+        assert isinstance(data["unchanged_count"], int)
+
+    def test_diff_response_tags_match_request(self, project):
+        r = requests.get(
+            f"{BASE}/projects/{project}/diff/{self.V1}/{self.V2}", timeout=5
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["v1"] == self.V1
+        assert data["v2"] == self.V2
+
+    def test_diff_same_version_has_no_changes(self, project):
+        """Diffing a version against itself must return empty lists and no changes."""
+        r = requests.get(
+            f"{BASE}/projects/{project}/diff/{self.V1}/{self.V1}", timeout=5
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["added"]   == []
+        assert data["removed"] == []
+        assert data["changed"] == []

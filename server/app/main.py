@@ -562,6 +562,69 @@ def server_stats(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/projects/{project_name}/diff/{v1}/{v2}")
+def diff_versions(project_name: str, v1: str, v2: str, db: Session = Depends(get_db)):
+    logger.info("Diff: %s  %s → %s", project_name, v1, v2)
+
+    commits = db.execute(text("""
+        SELECT c.version_tag, c.id
+        FROM commits c
+        JOIN projects p ON c.project_id = p.id
+        WHERE p.name = :pname AND c.version_tag = ANY(:tags)
+    """), {"pname": project_name, "tags": [v1, v2]}).fetchall()
+
+    tag_to_id = {row[0]: row[1] for row in commits}
+
+    if v1 not in tag_to_id:
+        raise HTTPException(status_code=404, detail=f"Version '{v1}' not found for project '{project_name}'.")
+    if v2 not in tag_to_id:
+        raise HTTPException(status_code=404, detail=f"Version '{v2}' not found for project '{project_name}'.")
+
+    rows = db.execute(text("""
+        WITH v1_files AS (
+            SELECT pf.file_path, a.file_hash, a.size_bytes
+            FROM project_files pf
+            JOIN assets a ON pf.asset_id = a.id
+            WHERE pf.commit_id = :cid1
+        ),
+        v2_files AS (
+            SELECT pf.file_path, a.file_hash, a.size_bytes
+            FROM project_files pf
+            JOIN assets a ON pf.asset_id = a.id
+            WHERE pf.commit_id = :cid2
+        )
+        SELECT
+            COALESCE(v1_files.file_path, v2_files.file_path) AS path,
+            v1_files.file_hash  AS hash1,
+            v1_files.size_bytes AS size1,
+            v2_files.file_hash  AS hash2,
+            v2_files.size_bytes AS size2
+        FROM v1_files
+        FULL OUTER JOIN v2_files ON v1_files.file_path = v2_files.file_path
+        ORDER BY path
+    """), {"cid1": tag_to_id[v1], "cid2": tag_to_id[v2]}).fetchall()
+
+    added, removed, changed, unchanged_count = [], [], [], 0
+    for path, hash1, size1, hash2, size2 in rows:
+        if hash1 is None:
+            added.append({"path": path, "size": size2})
+        elif hash2 is None:
+            removed.append({"path": path, "size": size1})
+        elif hash1 != hash2:
+            changed.append({"path": path, "old_size": size1, "new_size": size2})
+        else:
+            unchanged_count += 1
+
+    return {
+        "v1": v1,
+        "v2": v2,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "unchanged_count": unchanged_count,
+    }
+
+
 @app.patch("/projects/{project_name}")
 def rename_project(project_name: str, request: RenameProjectRequest, db: Session = Depends(get_db)):
     logger.info("Renaming project: %s -> %s", project_name, request.new_name)

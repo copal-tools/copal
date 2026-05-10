@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-10 (after QoL-2: push preview, version file browser, storage stats, description editing, TTY-gated prints, conflict policy config).
+> Last updated: 2026-05-10 (after Phase J: selective pull by folder prefix).
 
 ---
 
@@ -269,6 +269,8 @@ Do not change replication to `001` without adding a second volume server.
 | QoL-pm-2 | Template system: user-defined templates stored in templates.json (DATA_DIR). Each template defines preset metadata + folder structure. TemplateScreen ([T] from dashboard) with [N]/[E]/[D] for full CRUD. EditTemplateModal for create/edit. InitScreen RadioSet built dynamically from loaded templates; _do_create() reads folder list from template (supports nested paths). Form scrolling fixed for InitScreen and EditTemplateModal (inner ScrollableContainer with max-height: 55vh, buttons outside scroll area). CVX update indicator: dashboard background-polls CopalVX server every 60s for each project's latest version; shows yellow "↑ vX.Y" in name cell when server version differs from local project.yaml last_push_version. | ProjectRegistry config.py, pm.py, tui_app.py |
 | Dashboard redesign | Replaced DataTable with scrollable list of ProjectRow widgets (height 3). Each row shows project name, Open Folder button, ▲ push, ▼ pull buttons. Server-only CVX projects shown greyed out below a Rule separator (▼ pull only). Search Input filters by name/ID in real-time; Checkbox toggles server project inclusion. Arrow-key navigation between rows, Enter opens detail. Push/pull work directly from dashboard rows. _cvx_next_tag() and _cvx_stream() extracted to module-level; list_projects() added to copalvx_api.py. | ProjectRegistry tui_app.py, copalvx_api.py |
 | QoL-2 | **B:** fs.py + sync.py informational prints TTY-gated (`_verbose = sys.stdout.isatty()`); ⚠️ warnings still unconditional. **A:** `do_push()` reads `.copal/state.json` to pre-fill project name default (falls back to folder basename). **C:** `conflict_policy` added to `DEFAULT_CONFIG` + `setup_cli` + shown as pre-selected default in `do_pull()` prompt. **D:** `projects.description` returned by metadata endpoint; `PATCH /projects/{name}/description` endpoint added; `[E]dit notes` in TUI project detail. **E:** `[F]iles` browser in project detail — pick a version, see full file list with per-file sizes + total. **F:** `total_storage_bytes` (unique blob bytes across all versions) added to `GET /projects`. **G:** `GET /server/stats` endpoint + dashboard stats line (projects / versions / blobs / bytes). **H:** `do_push()` reordered: scan+handshake+preview shown before tag/message prompts. | main.py, api.py, config.py, fs.py, sync.py, tui.py |
+| Phase I | Version diff endpoint: `GET /projects/{name}/diff/{v1}/{v2}` (FULL OUTER JOIN, no SeaweedFS reads); `api.get_diff()`; `_show_diff()` TUI helper; `[D]iff` in `[F]iles` browser inner loop. | server/app/main.py, client/copal_core/api.py, client/tui.py |
+| Phase J | Selective pull: `_changed_folders()` + `_matches_prefix()` helpers; `do_pull()` shows numbered folder list from diff, filters manifest; `pull_cli()` + `--prefix` flag; `SelectivePullModal` in pm-tui with checkboxes; `get_diff()` + `extract_changed_folders()` + updated `run_pull()` in copalvx_api.py; state save skipped on partial pull. | client/tui.py, ProjectRegistry copalvx_api.py, tui_app.py |
 
 ---
 
@@ -281,6 +283,7 @@ Do not change replication to `001` without adding a second volume server.
 | PATCH | `/projects/{name}` | Rename project (body: `{new_name: str}`; 404/409) |
 | PATCH | `/projects/{name}/description` | Update project notes (body: `{description: str}`; 404) |
 | GET | `/projects/{name}/versions` | List versions (newest first) |
+| GET | `/projects/{name}/diff/{v1}/{v2}` | File diff between two versions (added/removed/changed/unchanged_count) |
 | GET | `/projects/{name}/metadata` | Project detail (includes `authors`, `description`) |
 | DELETE | `/projects/{name}` | Delete project (body: `{delete_orphan_files: bool}`) |
 | POST | `/handshake` | Compare client manifest with server |
@@ -490,15 +493,14 @@ Footer
 
 ---
 
-### Phase I — Version Diff (NEXT)
+### Phase I — Version Diff (COMPLETE, 2026-05-10)
 
-**Goal:** Let the user see what changed between any two versions before pulling.
-
-**Server endpoint:** `GET /projects/{name}/diff/{v1}/{v2}`
+**Server:** `GET /projects/{name}/diff/{v1}/{v2}` — full outer join of `project_files` for both commit IDs; classifies files as added/removed/changed/unchanged. No SeaweedFS reads — all data is in the DB.
 
 Returns:
 ```json
 {
+  "v1": "v1.0", "v2": "v2.0",
   "added":     [{"path": "...", "size": N}],
   "removed":   [{"path": "...", "size": N}],
   "changed":   [{"path": "...", "old_size": N, "new_size": N}],
@@ -506,17 +508,42 @@ Returns:
 }
 ```
 
-Implementation: join `project_files` for both commit IDs on `file_path`; compare `asset_id` (or `file_hash`) to classify. All data is already in the DB — no SeaweedFS reads.
+**Client:** `api.get_diff(project, v1, v2)` — wraps the endpoint; returns `None` on 404.
 
-**Client api.py:** `get_diff(project, v1, v2)` — wraps the new endpoint.
+**TUI:** `_show_diff(name, base_tag, versions)` helper. Called from the `[F]iles` browser via `[D]iff`. Auto-orders the pair so the diff always reads older → newer (using position in the versions list). Renders `- removed` (red), `+ added` (green), `~ changed` (yellow) with sizes; summary line at bottom.
 
-**TUI:** `[D]iff` option in the `[F]iles` browser (or as a standalone key in project detail). User picks two versions, sees the diff rendered with `+added`, `-removed`, `~changed` prefixes.
+**Navigation:** `[F]iles` browser now has an inner loop: show file list → `[D]iff / [Enter] back` → diff screen → back to file list.
 
-**Why this matters:** Enables "what changed in this push?" at a glance. Also the prerequisite for:
-- Smart per-file conflict resolution during pull (Phase C): if a file hasn't changed between the locally-held version and the target pull version, it can be safely overwritten
-- Selective pull (Phase J): user can see the diff first, then decide which subfolder to pull
+### Phase J — Selective pull (COMPLETE, 2026-05-10)
 
-**Dependency order for C/I/J:** Implement I first (pure server + API). Then J (client-only path prefix filter). Then C (uses both: per-file conflict mode derived from diff data).
+No server changes needed. Manifest is already a flat list of relative paths.
+
+**Folder grouping rule:** Each changed file's immediate parent directory becomes one checkbox option. A file directly in `02_Workfiles/` (e.g. `02_Workfiles/project.aep`) adds `02_Workfiles` to the list; a file in `02_Workfiles/Renders/` adds `02_Workfiles/Renders`. Only folders that have at least one changed file are shown.
+
+**Filter semantics (Option A — full subtree):** Selecting a folder prefix pulls everything under it. `02_Workfiles` selected → all files whose path starts with `02_Workfiles/` are included.
+
+**Client — `tui.py`:**
+- `_changed_folders(diff)` — groups diff entries by immediate parent; returns `[{folder, count}]` sorted alphabetically
+- `_matches_prefix(path, prefix_set)` — returns True if path's immediate parent or any ancestor matches a prefix in the set (full subtree, not just exact parent)
+- `do_pull()` — after manifest fetch, reads local state to find current version, calls `api.get_diff()`, shows numbered folder list with counts; user picks by number or blank=all; filters `files` before passing to `SyncEngine`; state save skipped on partial pull
+- `pull_cli()` — accepts `prefixes: list[str] | None`; filters manifest by prefix set; skips state save when selective
+- `pull` argparse subparser — `--prefix` flag (repeatable `action="append"`); passed to `pull_cli`
+
+**Client — `copalvx_api.py` (ProjectRegistry):**
+- `get_diff(project_name, v1, v2)` — calls `GET /projects/{name}/diff/{v1}/{v2}`; returns `None` on any error
+- `extract_changed_folders(diff_result)` — same grouping algorithm as `_changed_folders` in tui.py
+- `run_pull()` — updated signature: `prefixes=None`; appends `--prefix <folder>` for each prefix
+
+**pm-tui — `tui_app.py`:**
+- `SelectivePullModal(ModalScreen)` — shows version tag, folder checkboxes (one per changed folder with count), **Pull Selected** / **Pull Full Version** / **Cancel** buttons
+- `DashboardScreen.on_project_row_pull_requested()` — after version pick, spawns daemon thread to call `get_diff()`; on diff success pushes `SelectivePullModal`; on error or no diff falls through to full pull
+- `ProjectDetailScreen.action_pull_copalvx()` — same pattern; uses `last_push_version` from project.yaml as the "from" version for diff
+
+**Tests:**
+- `client/tests/unit/test_tui_helpers.py` — `TestChangedFolders` (12 tests) + `TestMatchesPrefix` (12 tests); no server required
+- `client/tests/integration/test_server.py` — `TestVersionDiff` (5 tests): 404 for missing project/version, response structure, tag echo, same-version zero-change
+
+**Dependency order:** C (smart per-file conflict resolution) depends on J and uses diff data + state.json.
 
 ---
 

@@ -176,6 +176,76 @@ def show_dashboard():
             input("  Press Enter...")
 
 
+# ── Version diff helper ────────────────────────────────────────────────────────
+def _show_diff(name, base_tag, versions):
+    """Prompt for a second version and display the diff against base_tag."""
+    _header(f"Diff: {name}")
+    others = [v for v in versions if v != base_tag]
+    if not others:
+        print(f"  {yellow('Only one version — nothing to compare against.')}")
+        input("  Press Enter...")
+        return
+    for i, v in enumerate(others[:10]):
+        print(f"  {i + 1:>2}.  {v}")
+    _rule()
+    raw = input(f"  Compare {base_tag} against [Enter to cancel]: ").strip()
+    if not raw:
+        return
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if not (0 <= idx < len(others)):
+            print(f"  {red('Invalid selection.')}")
+            input("  Press Enter...")
+            return
+        other = others[idx]
+    else:
+        other = versioning.ensure_prefix(raw)
+
+    # Auto-order so the diff always reads older → newer
+    v1_pos = versions.index(base_tag) if base_tag in versions else -1
+    v2_pos = versions.index(other) if other in versions else -1
+    if v1_pos != -1 and v2_pos != -1 and v1_pos < v2_pos:
+        diff_v1, diff_v2 = other, base_tag   # base_tag is newer → flip
+    else:
+        diff_v1, diff_v2 = base_tag, other
+
+    _header(f"Diff: {name}  {diff_v1} → {diff_v2}")
+    try:
+        result = api.get_diff(name, diff_v1, diff_v2)
+        if result is None:
+            print(f"  {red('One or both versions not found.')}")
+            input("  Press Enter...")
+            return
+    except Exception as ex:
+        print(f"  {red('Error:')} {ex}")
+        input("  Press Enter...")
+        return
+
+    added           = result.get("added", [])
+    removed         = result.get("removed", [])
+    changed         = result.get("changed", [])
+    unchanged_count = result.get("unchanged_count", 0)
+
+    _rule()
+    if not added and not removed and not changed:
+        print(f"  {green('Versions are identical.')}  ({unchanged_count} file(s) unchanged)")
+    else:
+        for f in sorted(removed, key=lambda x: x["path"]):
+            print(f"  {red('-')} {f['path'][:54]:<54}  {fmt_size(f['size']):>9}")
+        for f in sorted(added, key=lambda x: x["path"]):
+            print(f"  {green('+')} {f['path'][:54]:<54}  {fmt_size(f['size']):>9}")
+        for f in sorted(changed, key=lambda x: x["path"]):
+            print(f"  {yellow('~')} {f['path'][:43]:<43}  {fmt_size(f['old_size']):>9} → {fmt_size(f['new_size']):>9}")
+    _rule()
+    parts = []
+    if added:   parts.append(green(f"+{len(added)} added"))
+    if removed: parts.append(red(f"-{len(removed)} removed"))
+    if changed: parts.append(yellow(f"~{len(changed)} changed"))
+    parts.append(dim(f"{unchanged_count} unchanged"))
+    print(f"  {'  |  '.join(parts)}")
+    input("\n  Press Enter to return...")
+
+
 # ── Project detail ─────────────────────────────────────────────────────────────
 def show_project(name):
     while True:
@@ -274,25 +344,37 @@ def show_project(name):
                 tag = versions[idx] if 0 <= idx < len(versions) else versions[0]
             else:
                 tag = versioning.ensure_prefix(raw)
-            _header(f"Files: {name} @ {tag}")
-            try:
-                manifest = api.get_manifest(name, tag)
-                if not manifest:
-                    print(f"  {red('Version not found.')}")
+            while True:
+                _header(f"Files: {name} @ {tag}")
+                try:
+                    manifest = api.get_manifest(name, tag)
+                    if not manifest:
+                        print(f"  {red('Version not found.')}")
+                        input("  Press Enter...")
+                        break
+                    files = manifest.get("files", [])
+                    _rule()
+                    print(bold(f"  {'Path':<50}  {'Size':>9}"))
+                    _rule()
+                    for f in files:
+                        print(f"  {f['path'][:49]:<50}  {fmt_size(f['size']):>9}")
+                    _rule()
+                    total = sum(f["size"] for f in files)
+                    print(f"  {len(files)} file(s)   total size: {fmt_size(total)}")
+                except Exception as ex:
+                    print(f"  {red('Error:')} {ex}")
                     input("  Press Enter...")
-                    continue
-                files = manifest.get("files", [])
-                _rule()
-                print(bold(f"  {'Path':<50}  {'Size':>9}"))
-                _rule()
-                for f in files:
-                    print(f"  {f['path'][:49]:<50}  {fmt_size(f['size']):>9}")
-                _rule()
-                total = sum(f["size"] for f in files)
-                print(f"  {len(files)} file(s)   total size: {fmt_size(total)}")
-            except Exception as ex:
-                print(f"  {red('Error:')} {ex}")
-            input("\n  Press Enter to return...")
+                    break
+                print()
+                print(f"  {cyan('[D]')}iff against another version   {cyan('[Enter]')} back")
+                sub = input("\n  > ").strip().lower()
+                if sub in ("", "b", "back"):
+                    break
+                elif sub in ("d", "diff"):
+                    _show_diff(name, tag, versions)
+                else:
+                    print(f"  {red(f'Unknown: {sub!r}')}")
+                    input("  Press Enter...")
         elif choice in ("d", "delete"):
             if confirm_delete(name):
                 return  # project gone; back to dashboard
@@ -507,6 +589,34 @@ def do_push(preset_project=None):
     input("\n  Press Enter to return...")
 
 
+# ── Selective pull helpers ─────────────────────────────────────────────────────
+def _changed_folders(diff):
+    """Group changed files by immediate parent dir, return sorted list of {folder, count}."""
+    from collections import Counter
+    counts = Counter()
+    for cat in ("added", "removed", "changed"):
+        for entry in diff.get(cat, []):
+            path   = entry["path"].replace("\\", "/")
+            parent = path.rsplit("/", 1)[0] if "/" in path else ""
+            counts[parent] += 1
+    return sorted(
+        [{"folder": k, "count": v} for k, v in counts.items()],
+        key=lambda x: x["folder"],
+    )
+
+
+def _matches_prefix(path, prefix_set):
+    """True if path falls under any selected folder prefix (full subtree, Option A)."""
+    norm = path.replace("\\", "/")
+    for prefix in prefix_set:
+        if prefix == "":
+            if "/" not in norm:
+                return True
+        elif norm.startswith(prefix + "/"):
+            return True
+    return False
+
+
 # ── Interactive Pull ───────────────────────────────────────────────────────────
 def do_pull(preset_project=None):
     _header("Pull (Restore)")
@@ -591,6 +701,41 @@ def do_pull(preset_project=None):
     files = manifest.get("files", [])
     print(f"  Manifest: {len(files)} file(s).")
 
+    # ── Selective pull — show changed folders if we know the local version ──────
+    is_selective = False
+    local_state  = fs.load_local_state(target_dir)
+    local_tag    = None
+    if local_state and local_state.get("project_id") == project:
+        local_tag = local_state.get("last_tag")
+
+    if local_tag and local_tag != tag:
+        try:
+            diff    = api.get_diff(project, local_tag, tag)
+            folders = _changed_folders(diff) if diff else []
+        except Exception:
+            folders = []
+
+        if folders:
+            print()
+            _rule()
+            print(f"  Changed vs {local_tag}:")
+            for i, f in enumerate(folders, 1):
+                label = f["folder"] if f["folder"] else "(root)"
+                print(f"  {i:>2}.  {label:<40}  {dim(str(f['count']) + ' changed')}")
+            _rule()
+            raw_sel = input("  Select folders [1,2,...] or Enter for full version: ").strip()
+            if raw_sel:
+                selected = set()
+                for part in raw_sel.replace(",", " ").split():
+                    if part.isdigit():
+                        idx = int(part) - 1
+                        if 0 <= idx < len(folders):
+                            selected.add(folders[idx]["folder"])
+                if selected:
+                    files = [f for f in files if _matches_prefix(f["path"], selected)]
+                    is_selective = True
+                    print(f"  {green(f'Filtered to {len(files)} file(s).')}")
+
     # Plan
     print("  Analyzing filesystem...")
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
@@ -631,6 +776,8 @@ def do_pull(preset_project=None):
     if results["fail"] > 0:
         print(f"\n  {yellow('Warning:')} {results['fail']} file(s) failed to download.")
         print(f"  {dim('Local state not updated — this checkout is incomplete.')}")
+    elif is_selective:
+        print(f"  {dim('Partial pull — local state not updated.')}")
     else:
         fs.save_local_state(target_dir, project, tag)
         registry.register_project(project, target_dir, tag)
@@ -713,7 +860,7 @@ def push_cli(project, tag, path, message=None, author=None):
         sys.exit(1)
 
 
-def pull_cli(project, tag, target, policy="backup"):
+def pull_cli(project, tag, target, policy="backup", prefixes=None):
     """Non-interactive pull — all params provided, exits 0 on success, 1 on failure."""
     print(f"[CopalVX] Pull: {project} @ {tag} -> {target}")
 
@@ -728,6 +875,16 @@ def pull_cli(project, tag, target, policy="backup"):
         sys.exit(1)
 
     files = manifest.get("files", [])
+
+    is_selective = bool(prefixes)
+    if is_selective:
+        normalized = {p.rstrip("/").replace("\\", "/") for p in prefixes}
+        files = [f for f in files if _matches_prefix(f["path"], normalized)]
+        if not files:
+            print("Error: No files match the given prefix(es).", file=sys.stderr)
+            sys.exit(1)
+        print(f"Filtered to {len(files)} file(s) matching prefix(es).")
+
     print(f"Manifest: {len(files)} files. Analyzing...")
 
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
@@ -746,9 +903,10 @@ def pull_cli(project, tag, target, policy="backup"):
         print(f"Error: {results['fail']} file(s) failed. State not saved.", file=sys.stderr)
         sys.exit(1)
 
-    fs.save_local_state(target, project, tag)
-    registry.register_project(project, target, tag)
-    pm_hooks.hook_post_pull(target, project, tag)
+    if not is_selective:
+        fs.save_local_state(target, project, tag)
+        registry.register_project(project, target, tag)
+        pm_hooks.hook_post_pull(target, project, tag)
     print(f"[CopalVX] Done: {project} @ {tag}")
 
 
@@ -866,6 +1024,7 @@ def main():
     pull_p.add_argument("tag")
     pull_p.add_argument("target")
     pull_p.add_argument("--policy", default="backup")
+    pull_p.add_argument("--prefix", dest="prefixes", action="append", default=[])
 
     args, _ = parser.parse_known_args()
 
@@ -874,7 +1033,7 @@ def main():
     elif args.command == "push":
         push_cli(args.project, args.tag, args.path, args.message, args.author)
     elif args.command == "pull":
-        pull_cli(args.project, args.tag, args.target, args.policy)
+        pull_cli(args.project, args.tag, args.target, args.policy, args.prefixes)
     else:
         try:
             show_dashboard()
