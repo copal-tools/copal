@@ -130,6 +130,17 @@ def _cvx_stream(proc, modal: "CopalVXProgressModal", app: App,
         app.call_from_thread(modal.mark_done, False)
 
 
+def _fmt_size(b: int | None) -> str:
+    """Human-readable byte count (e.g. 1.4 MB)."""
+    if not b:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if b < 1024 or unit == "TB":
+            return f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}"
+        b /= 1024
+    return "?"
+
+
 # ── Data loaders ───────────────────────────────────────────────────────────────
 
 def _dashboard_rows() -> list[dict]:
@@ -892,6 +903,164 @@ class SelectivePullModal(ModalScreen):
             event.stop()
 
 
+class CopalVXFilesModal(ModalScreen):
+    """Browse the file list of a CopalVX version and diff any two versions."""
+
+    DEFAULT_CSS = """
+    CopalVXFilesModal { align: center middle; }
+    #files-modal-box {
+        width: 94;
+        height: 36;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #files-ver-row { height: 3; margin: 1 0; }
+    #files-ver-row Label { width: 14; content-align: left middle; }
+    #files-ver-row Select { width: 1fr; margin-right: 2; }
+    #files-act-row { height: 3; }
+    #files-act-row Button { margin-right: 1; }
+    #files-output { height: 1fr; border: solid $panel; margin-top: 1; }
+    """
+
+    def __init__(self, project_name: str, versions: list[str],
+                 local_version: str | None = None) -> None:
+        super().__init__()
+        self._project_name = project_name
+        self._versions     = versions
+        self._local_version = local_version
+
+    def compose(self) -> ComposeResult:
+        opts   = [(v, v) for v in self._versions]
+        latest = self._versions[0] if self._versions else None
+        # "From" defaults to the locally recorded version (what you have),
+        # "To" defaults to the latest version on the server.
+        from_val = (
+            self._local_version
+            if self._local_version and self._local_version in self._versions
+            else (self._versions[-1] if len(self._versions) > 1 else latest)
+        )
+        with Vertical(id="files-modal-box"):
+            yield Label(f"[bold]Files & Diff:[/bold] {self._project_name}")
+            yield Rule()
+            with Horizontal(id="files-ver-row"):
+                yield Label("From:")
+                yield Select(opts, value=from_val or Select.BLANK, id="sel-from")
+                yield Label("To:")
+                yield Select(opts, value=latest or Select.BLANK, id="sel-to")
+            with Horizontal(id="files-act-row"):
+                yield Button("View Diff", variant="primary", id="btn-diff")
+                yield Button("File List (To)", id="btn-files")
+                yield Button("Close", variant="error", id="btn-close")
+            yield RichLog(id="files-output", markup=True, wrap=False, highlight=False)
+
+    def on_mount(self) -> None:
+        # Auto-load: diff if local differs from latest, otherwise file list
+        latest = self._versions[0] if self._versions else None
+        if latest and self._local_version and self._local_version != latest:
+            self._load_diff(self._local_version, latest)
+        elif latest:
+            self._load_files(latest)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss()
+            return
+        from_v = self.query_one("#sel-from", Select).value
+        to_v   = self.query_one("#sel-to",   Select).value
+        if bid == "btn-diff" and from_v and to_v:
+            self._load_diff(str(from_v), str(to_v))
+        elif bid == "btn-files" and to_v:
+            self._load_files(str(to_v))
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss()
+            event.stop()
+
+    def _log(self) -> RichLog:
+        return self.query_one("#files-output", RichLog)
+
+    # ── Diff ──────────────────────────────────────────────────────────────────
+
+    def _load_diff(self, v1: str, v2: str) -> None:
+        log = self._log()
+        log.clear()
+        log.write(f"[dim]Loading diff {v1} → {v2}...[/dim]")
+
+        def _fetch():
+            diff = copalvx_api.get_diff(self._project_name, v1, v2)
+            self.app.call_from_thread(self._render_diff, diff, v1, v2)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _render_diff(self, diff: dict | None, v1: str, v2: str) -> None:
+        log = self._log()
+        log.clear()
+        if not diff:
+            log.write("[yellow]Diff unavailable (version not found or server error).[/yellow]")
+            return
+
+        added   = diff.get("added",   [])
+        removed = diff.get("removed", [])
+        changed = diff.get("changed", [])
+        unc     = diff.get("unchanged_count", 0)
+
+        log.write(f"[bold]Diff: {v1} → {v2}[/bold]")
+        log.write("")
+        for f in removed:
+            log.write(f"[red]  - {f['path']:<58}  {_fmt_size(f.get('size'))}[/red]")
+        for f in added:
+            log.write(f"[green]  + {f['path']:<58}  {_fmt_size(f.get('size'))}[/green]")
+        for f in changed:
+            old_s = _fmt_size(f.get("old_size"))
+            new_s = _fmt_size(f.get("new_size"))
+            log.write(f"[yellow]  ~ {f['path']:<58}  {old_s} → {new_s}[/yellow]")
+        log.write("")
+        total = len(added) + len(removed) + len(changed)
+        if total == 0:
+            log.write("  [dim]No differences — versions are identical.[/dim]")
+        else:
+            log.write(
+                f"  [dim]+ {len(added)} added  "
+                f"- {len(removed)} removed  "
+                f"~ {len(changed)} changed  "
+                f"= {unc} unchanged[/dim]"
+            )
+
+    # ── File list ─────────────────────────────────────────────────────────────
+
+    def _load_files(self, tag: str) -> None:
+        log = self._log()
+        log.clear()
+        log.write(f"[dim]Loading file list for {tag}...[/dim]")
+
+        def _fetch():
+            manifest = copalvx_api.get_manifest(self._project_name, tag)
+            self.app.call_from_thread(self._render_files, manifest, tag)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _render_files(self, manifest: dict | None, tag: str) -> None:
+        log = self._log()
+        log.clear()
+        if not manifest:
+            log.write("[yellow]Version not found or server error.[/yellow]")
+            return
+
+        files      = manifest.get("files", [])
+        total_size = sum(f.get("size", 0) for f in files)
+        log.write(
+            f"[bold]Files in {tag}[/bold]  "
+            f"({len(files)} files, {_fmt_size(total_size)} total)"
+        )
+        log.write("")
+        for f in sorted(files, key=lambda x: x["path"]):
+            sz = _fmt_size(f.get("size"))
+            log.write(f"  {f['path']:<62}  [dim]{sz:>8}[/dim]")
+
+
 class CopalVXProgressModal(ModalScreen):
     """Shows streaming progress for a CopalVX push/pull subprocess."""
 
@@ -1271,6 +1440,7 @@ class ProjectDetailScreen(Screen):
         Binding("t",      "toggle_timer",    "Start/stop timer", priority=True),
         Binding("p",      "push_copalvx",    "Push"),
         Binding("l",      "pull_copalvx",    "Pull"),
+        Binding("f",      "files_copalvx",   "Files/Diff"),
         Binding("n",      "rename_copalvx",  "Rename CVX"),
         Binding("x",      "delete_copalvx",  "Delete CVX"),
         Binding("d",      "delete_project",  "Delete project"),
@@ -1558,6 +1728,19 @@ class ProjectDetailScreen(Screen):
             )
         except Exception:
             pass  # best-effort; non-fatal
+
+    def action_files_copalvx(self) -> None:
+        project_name  = self._cvx_project_name()
+        local_version = self._data.get("copalvx", {}).get("last_push_version")
+
+        versions = copalvx_api.get_versions(project_name)
+        if not versions:
+            self.notify("No versions found on server.", title="CopalVX", severity="warning")
+            return
+
+        self.app.push_screen(
+            CopalVXFilesModal(project_name, versions, local_version)
+        )
 
     def action_rename_copalvx(self) -> None:
         project_name = self._cvx_project_name()

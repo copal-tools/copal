@@ -152,6 +152,16 @@ def get_diff(project_name: str, v1: str, v2: str) -> dict | None:
         return None
 
 
+def get_manifest(project_name: str, tag: str) -> dict | None:
+    """Returns manifest {files: [{path, fid, hash, size}]}, or None on error."""
+    try:
+        url = f"{_base_url()}/checkout/{project_name}/{tag}"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
 def extract_changed_folders(diff_result: dict) -> list[dict]:
     """Return [{folder: str, count: int}] sorted by path.
 
