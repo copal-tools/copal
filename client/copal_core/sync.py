@@ -23,18 +23,24 @@ class SyncEngine:
         self.policy = conflict_policy.lower()
         self.threads = max_threads # Store it for execute_plan
 
-    def generate_plan(self, server_manifest_files, local_root):
+    def generate_plan(self, server_manifest_files, local_root, last_manifest_hashes=None):
         """
         Compares Server Manifest vs Local Filesystem.
         Returns a list of task dictionaries representing the 'Plan'.
+
+        last_manifest_hashes — optional {rel_path: sha256} map from the last locally
+        synced version.  When provided, conflict resolution becomes per-file smart:
+          • local hash == last hash  →  file is untouched since last sync → auto-overwrite
+          • local hash != last hash  →  file was edited locally            → auto-backup
+        Falls back to self.policy when the map is absent.
         """
         plan = []
-        
+
         # --- STEP 1: SCAN LOCAL REALITY ---
         if _verbose:
             print("🔍 SyncEngine: Scanning local drive for smart optimizations...")
         local_files = fs.scan_directory(local_root)
-        
+
         # Build a "Hash Map" to find files regardless of their name/location.
         # Format: { "sha256_hash": ["path/to/file1", "path/to/file2"] }
         local_hash_map = {}
@@ -54,7 +60,7 @@ class SyncEngine:
             server_hash = asset['hash']
             expected_size = asset['size']
             seaweed_fid = asset['fid']
-            
+
             # The absolute path on disk.
             # Validate the resolved path stays inside local_root to guard against
             # path-traversal attacks if the server manifest is ever malicious or
@@ -65,7 +71,7 @@ class SyncEngine:
             if not full_dest_path.startswith(safe_root):
                 print(f"⚠️  Skipping unsafe path from server manifest: {rel_path!r}")
                 continue
-            
+
             # Task Object (Data needed to execute the action later)
             task = {
                 "action": None,
@@ -81,7 +87,8 @@ class SyncEngine:
             if os.path.exists(full_dest_path):
                 # Optimization: Check size first (fast), then hash (slow)
                 local_size = os.path.getsize(full_dest_path)
-                
+                local_hash = None
+
                 if local_size == expected_size:
                     local_hash = fs.calculate_hash(full_dest_path)
                     if local_hash == server_hash:
@@ -89,20 +96,34 @@ class SyncEngine:
                         task["action"] = SyncAction.SKIP
                         plan.append(task)
                         continue
-                
-                # If we get here, it's a CONFLICT (Size or Hash mismatch)
-                if self.policy == "overwrite":
+
+                # Conflict: file exists locally but differs from the target version.
+                if last_manifest_hashes is not None:
+                    # Smart mode — per-file decision based on the last-synced state.
+                    if local_hash is None:
+                        local_hash = fs.calculate_hash(full_dest_path)
+                    norm_path = rel_path.replace("\\", "/")
+                    last_hash = last_manifest_hashes.get(norm_path)
+                    if last_hash is not None and local_hash == last_hash:
+                        # File is identical to the last-synced version → user
+                        # hasn't touched it → safe to overwrite automatically.
+                        task["action"] = SyncAction.CONFLICT_OVERWRITE
+                    else:
+                        # File was modified locally (or is new since last sync)
+                        # → preserve the user's work with a backup.
+                        task["action"] = SyncAction.CONFLICT_BACKUP
+                elif self.policy == "overwrite":
                     task["action"] = SyncAction.CONFLICT_OVERWRITE
                 elif self.policy == "skip":
                     task["action"] = SyncAction.CONFLICT_SKIP
                 else:
                     task["action"] = SyncAction.CONFLICT_BACKUP
-                
+
                 # If policy is Skip, we stop here.
                 if task["action"] == SyncAction.CONFLICT_SKIP:
                     plan.append(task)
                     continue
-                    
+
                 # If Backup/Overwrite, we still need to acquire the content.
                 # Fall through to check if we can copy it locally...
 

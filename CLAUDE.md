@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-10 (after Phase J: selective pull by folder prefix).
+> Last updated: 2026-05-12 (after Phase C: smart per-file conflict resolution).
 
 ---
 
@@ -271,6 +271,7 @@ Do not change replication to `001` without adding a second volume server.
 | QoL-2 | **B:** fs.py + sync.py informational prints TTY-gated (`_verbose = sys.stdout.isatty()`); ⚠️ warnings still unconditional. **A:** `do_push()` reads `.copal/state.json` to pre-fill project name default (falls back to folder basename). **C:** `conflict_policy` added to `DEFAULT_CONFIG` + `setup_cli` + shown as pre-selected default in `do_pull()` prompt. **D:** `projects.description` returned by metadata endpoint; `PATCH /projects/{name}/description` endpoint added; `[E]dit notes` in TUI project detail. **E:** `[F]iles` browser in project detail — pick a version, see full file list with per-file sizes + total. **F:** `total_storage_bytes` (unique blob bytes across all versions) added to `GET /projects`. **G:** `GET /server/stats` endpoint + dashboard stats line (projects / versions / blobs / bytes). **H:** `do_push()` reordered: scan+handshake+preview shown before tag/message prompts. | main.py, api.py, config.py, fs.py, sync.py, tui.py |
 | Phase I | Version diff endpoint: `GET /projects/{name}/diff/{v1}/{v2}` (FULL OUTER JOIN, no SeaweedFS reads); `api.get_diff()`; `_show_diff()` TUI helper; `[D]iff` in `[F]iles` browser inner loop. | server/app/main.py, client/copal_core/api.py, client/tui.py |
 | Phase J | Selective pull: `_changed_folders()` + `_matches_prefix()` helpers; `do_pull()` shows numbered folder list from diff, filters manifest; `pull_cli()` + `--prefix` flag; `SelectivePullModal` in pm-tui with checkboxes; `get_diff()` + `extract_changed_folders()` + updated `run_pull()` in copalvx_api.py; state save skipped on partial pull. | client/tui.py, ProjectRegistry copalvx_api.py, tui_app.py |
+| Phase C | Smart per-file conflict resolution: `generate_plan(last_manifest_hashes=None)` in SyncEngine; untouched files auto-overwrite, edited files auto-backup; `do_pull()` fetches last manifest + shows smart-mode notice; `pull_cli()` applies smart mode silently; falls back to global policy when no state available. | client/copal_core/sync.py, client/tui.py |
 
 ---
 
@@ -544,6 +545,36 @@ No server changes needed. Manifest is already a flat list of relative paths.
 - `client/tests/integration/test_server.py` — `TestVersionDiff` (5 tests): 404 for missing project/version, response structure, tag echo, same-version zero-change
 
 **Dependency order:** C (smart per-file conflict resolution) depends on J and uses diff data + state.json.
+
+---
+
+### Phase C — Smart per-file conflict resolution (COMPLETE, 2026-05-12)
+
+No server changes needed. All logic is in `SyncEngine` and `do_pull()`/`pull_cli()`.
+
+**How it works:** When pulling, `do_pull()` and `pull_cli()` try to load the manifest for the locally recorded `last_tag` (from `.copal/state.json`). This gives a `{path: hash}` map of every file as it was when last synced. `SyncEngine.generate_plan()` receives this map as `last_manifest_hashes`.
+
+For each file that conflicts (exists locally but differs from the target version):
+- `local_hash == last_manifest_hash` → file is untouched since last sync → **auto-overwrite** (no backup needed, no user decision required)
+- `local_hash != last_manifest_hash` OR path absent from last manifest → file was modified locally → **auto-backup** (`.bak` created automatically)
+
+Falls back gracefully to the global `conflict_policy` if:
+- No `.copal/state.json` exists (first pull)
+- Manifest fetch for `local_tag` fails (network error, version deleted)
+- `local_tag == tag` (re-pulling the same version, no "last" to compare against in `pull_cli`)
+
+**`sync.py`:** `generate_plan(server_manifest_files, local_root, last_manifest_hashes=None)` — new optional parameter. When provided, replaces the global-policy branch with the per-file hash comparison.
+
+**`tui.py` `do_pull()`:**
+- Manifest fetch moved before the conflict section (needed for smart-mode decision)
+- After selective-pull section: fetches last manifest and builds `last_manifest_hashes`
+- Smart mode: prints `Smart conflict mode (comparing against vX.Y)` instead of showing policy prompt
+- Plan summary now shows `Auto-update: N (unchanged locally)` + `Backed up: N (your edits → .bak)` in smart mode
+- Falls back to the existing global-policy prompt when smart data is unavailable
+
+**`tui.py` `pull_cli()`:** reads local state from `target` dir; if `local_tag` found and project matches, fetches last manifest silently; passes `last_manifest_hashes` to `generate_plan()`; prints one line `Smart conflict detection active (comparing against vX.Y)`.
+
+**Tests:** `TestSmartConflict` (10 tests) in `client/tests/unit/test_sync.py` — untouched→overwrite, edited→backup, absent-from-last→backup, perfect-match→skip, missing-file→download, global-policy fallback (backup/overwrite/skip), backslash normalisation, mixed multi-file scenario.
 
 ---
 

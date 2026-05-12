@@ -674,18 +674,7 @@ def do_pull(preset_project=None):
     tdir_input = input(f"  Target directory [{default_target}]: ").strip()
     target_dir = tdir_input if tdir_input else default_target
 
-    # Conflict policy
-    cfg_policy = SETTINGS.get("conflict_policy", "backup")
-    _policy_num = {"backup": "1", "overwrite": "2", "skip": "3"}.get(cfg_policy, "1")
-    print()
-    print("  Conflict policy for changed files:")
-    print("    1. Backup (rename to .bak)")
-    print("    2. Overwrite")
-    print("    3. Skip (keep local)")
-    policy_choice = input(f"  Select [1-3] [{_policy_num}={cfg_policy}]: ").strip() or _policy_num
-    policy = {"2": "overwrite", "3": "skip"}.get(policy_choice, "backup")
-
-    # Fetch manifest
+    # Fetch manifest early so we have file data for smart conflict detection
     print("\n  Fetching manifest...")
     try:
         manifest = api.get_manifest(project, tag)
@@ -736,28 +725,68 @@ def do_pull(preset_project=None):
                     is_selective = True
                     print(f"  {green(f'Filtered to {len(files)} file(s).')}")
 
+    # ── Smart conflict detection ─────────────────────────────────────────────────
+    # Try to load the last-synced manifest so we can decide per-file whether the
+    # user has made local edits (→ backup) or left the file untouched (→ overwrite).
+    smart_mode           = False
+    last_manifest_hashes = None
+    if local_tag:
+        try:
+            last_mf = api.get_manifest(project, local_tag)
+            if last_mf and last_mf.get("files"):
+                last_manifest_hashes = {
+                    f["path"].replace("\\", "/"): f["hash"]
+                    for f in last_mf["files"]
+                }
+                smart_mode = True
+        except Exception:
+            pass  # Fall back to global policy
+
+    # ── Conflict policy ──────────────────────────────────────────────────────────
+    print()
+    if smart_mode:
+        print(f"  {green('Smart conflict mode')} (comparing against {bold(local_tag)}):")
+        print(f"    Untouched files → auto-overwrite  |  Edited files → auto-backup")
+        policy = "backup"  # used only for files absent from the last manifest
+    else:
+        cfg_policy = SETTINGS.get("conflict_policy", "backup")
+        _policy_num = {"backup": "1", "overwrite": "2", "skip": "3"}.get(cfg_policy, "1")
+        print("  Conflict policy for changed files:")
+        print("    1. Backup (rename to .bak)")
+        print("    2. Overwrite")
+        print("    3. Skip (keep local)")
+        policy_choice = input(f"  Select [1-3] [{_policy_num}={cfg_policy}]: ").strip() or _policy_num
+        policy = {"2": "overwrite", "3": "skip"}.get(policy_choice, "backup")
+
     # Plan
     print("  Analyzing filesystem...")
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
-    plan   = engine.generate_plan(files, target_dir)
+    plan   = engine.generate_plan(files, target_dir, last_manifest_hashes=last_manifest_hashes)
 
-    counts = {"DOWNLOAD": 0, "LOCAL_COPY": 0, "SKIP": 0, "BACKUP": 0}
+    counts = {"DOWNLOAD": 0, "LOCAL_COPY": 0, "SKIP": 0, "BACKUP": 0, "AUTO_OVERWRITE": 0}
     for task in plan:
         act = task["action"]
-        if task.get("conflict_mode") == "BACKUP" or act == "BACKUP":
-            counts["BACKUP"] += 1
-        if act == "LOCAL_COPY":
-            counts["LOCAL_COPY"] += 1
-        elif act == "DOWNLOAD":
-            counts["DOWNLOAD"] += 1
-        elif "SKIP" in act:
+        cm  = task.get("conflict_mode")
+        if "SKIP" in act:
             counts["SKIP"] += 1
+        elif cm == "BACKUP":
+            counts["BACKUP"] += 1
+        elif cm == "OVERWRITE":
+            counts["AUTO_OVERWRITE"] += 1
+        elif act == "LOCAL_COPY":
+            counts["LOCAL_COPY"] += 1
+        else:
+            counts["DOWNLOAD"] += 1
 
     _rule()
-    print(f"  Download:    {counts['DOWNLOAD']}")
-    print(f"  Local copy:  {counts['LOCAL_COPY']}  (no bandwidth)")
-    print(f"  Backup:      {counts['BACKUP']}")
-    print(f"  Skip:        {counts['SKIP']}")
+    print(f"  Download:     {counts['DOWNLOAD']}")
+    print(f"  Local copy:   {counts['LOCAL_COPY']}  (no bandwidth)")
+    if smart_mode:
+        print(f"  Auto-update:  {counts['AUTO_OVERWRITE']}  (unchanged locally)")
+        print(f"  Backed up:    {counts['BACKUP']}  (your edits → .bak)")
+    else:
+        print(f"  Backup:       {counts['BACKUP']}")
+    print(f"  Skip:         {counts['SKIP']}")
     _rule()
 
     if input("  Proceed? (Y/n): ").strip().lower() == "n":
@@ -885,10 +914,27 @@ def pull_cli(project, tag, target, policy="backup", prefixes=None):
             sys.exit(1)
         print(f"Filtered to {len(files)} file(s) matching prefix(es).")
 
+    # Smart conflict detection — compare against last-synced manifest if available
+    last_manifest_hashes = None
+    local_state = fs.load_local_state(target)
+    if local_state and local_state.get("project_id") == project:
+        local_tag = local_state.get("last_tag")
+        if local_tag and local_tag != tag:
+            try:
+                last_mf = api.get_manifest(project, local_tag)
+                if last_mf and last_mf.get("files"):
+                    last_manifest_hashes = {
+                        f["path"].replace("\\", "/"): f["hash"]
+                        for f in last_mf["files"]
+                    }
+                    print(f"Smart conflict detection active (comparing against {local_tag})")
+            except Exception:
+                pass  # Fall back to --policy value
+
     print(f"Manifest: {len(files)} files. Analyzing...")
 
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
-    plan   = engine.generate_plan(files, target)
+    plan   = engine.generate_plan(files, target, last_manifest_hashes=last_manifest_hashes)
 
     def _download_progress(done, total, msg):
         print(f"[DOWNLOAD] {done}/{total} {msg}", flush=True)
