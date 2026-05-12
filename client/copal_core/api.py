@@ -170,6 +170,21 @@ def update_description(project_name, description):
         raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
 
 
+def get_diff(project, v1, v2):
+    """Returns diff dict {v1, v2, added, removed, changed, unchanged_count}. None on 404."""
+    try:
+        resp = requests.get(
+            f"{API_BASE}/projects/{project}/diff/{v1}/{v2}",
+            timeout=API_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
 def delete_project(project_name, delete_orphan_files=False):
     """Deletes a project. Returns response dict. Raises ValueError on 404."""
     try:
