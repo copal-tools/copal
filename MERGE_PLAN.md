@@ -1,6 +1,7 @@
 # Copal Tools — Rebrand & Monorepo Plan
 
-> Working doc for the CopalVX + ProjectRegistry → `copal-tools/copal` monorepo migration.
+> Historical record of the CopalVX + ProjectRegistry → `copal-tools/copal` monorepo migration.
+> Phases 0–4 complete (as of 2026-05-13). Only Phase 5 (public launch readiness) + tracked follow-ups remain.
 > Delete this file once Phase 5 is done.
 > Started: 2026-05-13.
 
@@ -50,14 +51,14 @@ Goal: lock in identity before any code work. Names disappear fast.
 2. ✅ Create the GitHub org `copal-tools` and an empty `copal` repo.
 3. ⏳ Buy `copalpm.app`.
 
-### Phase 1 — License both existing repos (Claude does this; ~10 min)
+### Phase 1 — License both existing repos (✅ COMPLETE, 2026-05-13)
 
-Lock in Apache 2.0 in the *existing* repos so the license history is durable independent of when the merge happens.
+Locked in Apache 2.0 in the *existing* repos so the license history is durable independent of when the merge happened.
 
-- Add `LICENSE` (full Apache 2.0 text) to `Copal-VX/` and `ProjectRegistry/` roots.
-- Add `NOTICE` (`Copyright 2026 The Copal Tools Authors`) to both.
-- Update both `pyproject.toml` files with `license = "Apache-2.0"` SPDX identifier.
-- Commit in each repo.
+- ✅ Added `LICENSE` (full Apache 2.0 text) to `Copal-VX/` and `ProjectRegistry/` roots.
+- ✅ Added `NOTICE` (`Copyright 2026 The Copal Tools Authors`) to both.
+- ✅ Updated both `pyproject.toml` files with `license = "Apache-2.0"` SPDX identifier.
+- ✅ Committed in each repo (`abb5bb9` in Copal-VX worktree, `c0936f5` in ProjectRegistry main).
 
 ### Phase 2 — Rename ProjectRegistry internals (✅ COMPLETE, 2026-05-13)
 
@@ -81,7 +82,7 @@ Done inside the ProjectRegistry repo (not during the merge). Key outcomes:
 **Breaking changes for any existing install:**
 - Pre-rebrand service installs (plist label `com.projectregistry.task-tracker` / NSSM service `TaskTracker`) must be removed before installing the new service. The old `pm uninstall-service` cleans them up cleanly.
 
-### Phase 3 — Monorepo merge (~2 hours)
+### Phase 3 — Monorepo merge (✅ COMPLETE, 2026-05-13)
 
 ```
 copal/
@@ -89,19 +90,39 @@ copal/
 ├── copalpm/        ← git subtree add from ProjectRegistry (post-rename)
 ├── LICENSE
 ├── NOTICE
+├── MERGE_PLAN.md   ← this file
 └── README.md       ← umbrella readme, one paragraph per package, links to per-package READMEs
 ```
 
-- `git subtree add --prefix=copalvx <copal-vx-url> main` (preserves history)
-- Same for copalpm
-- Per-package READMEs stay where they are (SEO surface)
-- Umbrella README is short — one paragraph each on VX and PM, install instructions, links
+- ✅ FF-merged worktree branch `claude/jolly-pascal-9932bf` (3 commits) into Copal-VX main
+- ✅ Pushed Copal-VX main + ProjectRegistry main to origin as backups
+- ✅ Initialized monorepo locally at `E:\Development\copal\` with umbrella `LICENSE` / `NOTICE` / `README.md`
+- ✅ `git subtree add --prefix=copalvx file:///E:/Development/Copal-VX main` (preserves history)
+- ✅ `git subtree add --prefix=copalpm file:///E:/Development/ProjectRegistry main` (preserves history)
+- ✅ Per-package READMEs kept in place as SEO surface
+- ✅ Origin remote wired to `https://github.com/copal-tools/copal.git`
+- ✅ Initial public push completed
 
-### Phase 4 — Update CLAUDE.md + integration paths (~1 hour)
+### Phase 3.5 — Personal data audit + history rewrite (✅ COMPLETE, 2026-05-13)
 
-- Restructure CLAUDE.md: umbrella section, then per-package sections
-- `client_path` config key in `~/.copal/config.json` now points at `<repo>/copalvx`
-- Memory updates: `project_status` reflects monorepo state
+After the initial public push, audited for personal/sensitive data. Findings + remediation:
+
+- 🔴 **DB password `secure_password_123`**: was a real (testing) password baked as a default in `server/app/init_db.py` and `database.py`. Forward-fixed to `CHANGE_ME_IN_DOT_ENV`, scrubbed from history via `git filter-repo --replace-text`, force-pushed. **Password rotated on the actual server** in a separate independent action (ALTER USER + `.env` update + API container restart).
+- 🟡 **Author home LAN IP `192.168.178.161`** baked as default across 9 files: forward-fixed to `192.168.1.100` (RFC1918 example range). History intentionally not scrubbed (RFC1918 IP, low exposure value).
+- 🟡 **Personal names (BBDO/Claudia/Stelios)** as default template values in `pm.py` + `tui_app.py` placeholders: forward-fixed to empty strings / generic placeholders; **scrubbed from history** in the same filter-repo pass.
+- 🟡 **Author email `tsiros123@gmail.com`** in every commit's metadata: scrubbed via `git filter-repo --mailmap` to `51947061+Sifdone@users.noreply.github.com`. User also updated global git config so future commits use the noreply form.
+- 🟢 **Stale `Sifdone/...` URLs** in `copalvx/README.md`: forward-fixed to the new monorepo URL.
+- 🟢 **TLC employer name** as UI label: forward-fixed to "Internal" (kept the underlying schema value `"tlc"` for backwards compat with existing project.yaml files).
+
+Result: 79 commits rewritten. Force-pushed to `copal-tools/copal`. Old `Sifdone/Copal-VX` and `Sifdone/ProjectRegistry` repos still hold unredacted history — slated for archive in Phase 5.
+
+### Phase 4 — Update CLAUDE.md + integration paths (✅ COMPLETE, 2026-05-13)
+
+- ✅ Restructured CLAUDE.md: small umbrella at monorepo root + detailed per-package docs (`copalvx/CLAUDE.md`, `copalpm/CLAUDE.md`)
+- ✅ PM-specific gotchas (#17 rename + #18 daemon spec change) moved from `copalvx/CLAUDE.md` to `copalpm/CLAUDE.md`
+- ✅ MERGE_PLAN.md relocated from `copalvx/MERGE_PLAN.md` to monorepo root (this file)
+- ✅ `client_path` config key documented: now points at `<monorepo>/copalvx/client/` instead of the standalone `Copal-VX/client/` path
+- ✅ Memory updates: `project_status` reflects monorepo-complete state
 
 ### Phase 5 — Public launch readiness (when ready)
 

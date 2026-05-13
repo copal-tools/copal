@@ -498,7 +498,7 @@ When `InitScreen._do_create()` creates a new project, it passes `auto_push=True`
 `~/.copal/config.json` must contain:
 ```json
 {
-    "client_path": "E:\\Development\\Copal-VX\\client"
+    "client_path": "E:\\Development\\copal\\copalvx\\client"
 }
 ```
 Without this key, push/pull raises a clear error explaining what to add.
