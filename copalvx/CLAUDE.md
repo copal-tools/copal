@@ -359,7 +359,7 @@ Rewrote `client/tui.py` as a terminal dashboard:
 - `do_push()` version tag prompt no longer auto-increments: when the project has existing versions, the prompt is blank and the user types the tag manually (latest version shown as context). New projects still default to `v1.0`.
 - Delete 500 fix: `DELETE /projects/{name}` now deletes the project row first (cascades → commits → project_files), then removes orphan assets. Previously tried to delete assets while project_files still held FK references.
 
-**pm-tui (`E:\Development\ProjectRegistry\src\copalpm\tui_app.py` — renamed from `src/project_registry/` in Phase 2):**
+**pm-tui (`copalpm/src/copalpm/tui_app.py` in the monorepo — renamed from `src/project_registry/` in Phase 2):**
 
 Key bindings in `ProjectDetailScreen`:
 

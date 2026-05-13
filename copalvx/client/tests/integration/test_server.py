@@ -8,7 +8,7 @@ Prerequisites
 
 Run
 ---
-    cd E:\\Development\\Copal-VX\\client
+    cd E:\\Development\\copal\\copalvx\\client
     uv run pytest tests/integration/ -v
 
 Each test class is independent.  A module-scoped fixture creates a unique

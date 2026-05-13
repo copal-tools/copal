@@ -83,7 +83,7 @@ def _run(cmd, label=""):
 def hook_pre_push(root_dir):
     """Hook 1 — pre-push: sync pending time sessions into project.yaml.
 
-    Runs `project sync-time` against the project.yaml found at or above
+    Runs `copalpm record sync-time` against the project.yaml found at or above
     root_dir.  This ensures all locally-tracked time data is embedded in the
     record before CopalVX uploads the folder, so the time history travels with
     the push to other machines.

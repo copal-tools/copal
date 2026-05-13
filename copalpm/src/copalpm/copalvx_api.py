@@ -90,9 +90,9 @@ def _resolve_copalvx(subcmd_args: list[str]) -> tuple[list[str], str | None]:
         return ["uv", "run", "copalvx"] + subcmd_args, client_dir
 
     if platform.system() == "Windows":
-        example = r"C:\Users\You\Development\Copal-VX\client"
+        example = r"C:\Users\You\Development\copal\copalvx\client"
     else:
-        example = "/Users/you/Development/Copal-VX/client"
+        example = "/Users/you/Development/copal/copalvx/client"
 
     raise RuntimeError(
         "CopalVX not found. Fix one of:\n"
