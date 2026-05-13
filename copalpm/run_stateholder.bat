@@ -1,0 +1,1 @@
+uv run task-tracker

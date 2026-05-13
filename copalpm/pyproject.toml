@@ -1,0 +1,41 @@
+[project]
+name = "copalpm"
+version = "0.1.0"
+description = "CopalPM — terminal project management and time tracking for motion design and VFX work. Companion to CopalVX."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "The Copal Tools Authors"}]
+keywords = ["vfx", "project-management", "time-tracking", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+    "flask>=3.1.2",
+    "waitress>=3.0.2",
+    "pyyaml>=6.0",
+    "textual>=0.59",
+]
+
+[project.urls]
+Homepage = "https://copalpm.app"
+Source = "https://github.com/copal-tools/copal"
+
+[project.scripts]
+copalpm = "copalpm.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-q"
