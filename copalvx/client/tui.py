@@ -1094,6 +1094,16 @@ def setup_cli():
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main():
+    # Force utf-8 stdout/stderr so emoji and box-drawing characters survive
+    # being piped on Windows (default codepage is cp1252, which can't encode
+    # ❌ ✅ ─ etc. — the resulting UnicodeEncodeError aborts pulls mid-flight).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     parser = argparse.ArgumentParser(prog="copalvx", add_help=False)
     subparsers = parser.add_subparsers(dest="command")
 
