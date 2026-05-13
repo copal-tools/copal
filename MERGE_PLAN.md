@@ -120,6 +120,12 @@ These are real follow-ons but should not block or be bundled with the rebrand:
 - **Figma redesign** — user-driven, separate
 - **PM auto-push opt-in change** — small follow-up after Phase 4 lands
 
+## Post-rebrand follow-ups (track separately)
+
+- **Stale Claude worktrees in `E:\Development\Copal-VX\.claude\worktrees\`.** Around 10 worktrees exist; most are 5-25 commits behind main. Triage list and remove dead branches/worktrees via `git worktree remove` + `git branch -D`. Not blocking Phase 3+ but worth a cleanup pass.
+- **User data directory migration** `project-registry/` → `copalpm/` with one-time auto-migrate on first run. Deferred from Phase 2 to preserve existing data.
+- **Archive old standalone repos** (`Sifdone/Copal-VX`, `Sifdone/ProjectRegistry`) after the monorepo is live — replace their READMEs with a redirect notice. Don't delete (preserves issue/PR history + external links).
+
 ## Risk notes
 
 - ~~Phase 2 is the riskiest step~~ ✅ landed. Subprocess audit + integration smoke check passed.
