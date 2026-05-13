@@ -85,7 +85,7 @@ Always operate on the monorepo at `E:\Development\copal\`. The two pre-rebrand s
 
 For working directory-specific config:
 - The CopalVX client reads `~/.copal/config.json` per user. Its `client_path` key must now point at `<monorepo>/copalvx/client/` (e.g. `E:\Development\copal\copalvx\client`), not the old standalone path.
-- The CopalPM data dir is `%APPDATA%\project-registry\` (Windows) / `~/.config/project-registry/` (Mac/Linux). Intentionally still named `project-registry` for backwards compatibility — see CopalPM's gotcha #1.
+- The CopalPM data dir is `%APPDATA%\copalpm\` (Windows) / `~/.config/copalpm/` (Mac/Linux). Auto-migrated from the pre-rebrand `project-registry/` path on first import after upgrade — see CopalPM's gotcha #1.
 
 ---
 
@@ -99,8 +99,6 @@ For working directory-specific config:
 | Figma UI redesign for CopalPM | ⏳ User-driven, separate |
 
 Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
-- Stale Claude worktrees cleanup in `E:\Development\Copal-VX\.claude\worktrees\`
-- User data directory migration (`project-registry/` → `copalpm/`)
 - Archive old standalone repos
 
 ---

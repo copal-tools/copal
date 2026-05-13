@@ -13,7 +13,7 @@ Terminal project management + time tracking for motion design and VFX work. File
 
 The single `copalpm` binary fronts everything via subcommand groups. With no args, it launches the TUI (the most common entry point).
 
-Renamed from `ProjectRegistry` (and the package was `project_registry/`) in Phase 2 of the rebrand. The user data directory **still uses the legacy name** `project-registry/` — see gotcha #1.
+Renamed from `ProjectRegistry` (and the package was `project_registry/`) in Phase 2 of the rebrand. The user data directory was migrated from `project-registry/` to `copalpm/` in a follow-up release with a one-time auto-copy on first run — see gotcha #1.
 
 ---
 
@@ -84,8 +84,8 @@ copalpm task-tracker               # daemon entry point (hidden — invoked by t
 ## Storage
 
 Per-user data lives at:
-- macOS / Linux: `~/.config/project-registry/`
-- Windows: `%APPDATA%\project-registry\`
+- macOS / Linux: `~/.config/copalpm/`
+- Windows: `%APPDATA%\copalpm\`
 
 Files:
 - `registry.json` — list of registered projects (path + metadata)
@@ -142,7 +142,7 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
 ## Gotchas
 
-1. **The user data directory is named `project-registry/`, not `copalpm/`.** Intentional — preserves existing data across the Phase 2 rebrand without forcing migration. Defined in `src/copalpm/config.py`. A migration to `copalpm/` is a tracked follow-up in MERGE_PLAN.md.
+1. **One-time auto-migration from the legacy `project-registry/` data dir.** `config.py:_resolve_data_dir()` runs on every import: if `<base>/copalpm/` doesn't exist but `<base>/project-registry/` does, it `shutil.copytree`s the legacy directory into the new location and writes a `.migrated_from_project-registry` marker (source path + UTC timestamp). The legacy directory is preserved as a backup — users delete it manually once they've verified things work. If the copy fails (permissions, disk full, etc.) the resolver falls back to the legacy directory so the tool stays functional; next run retries. Idempotent: once the new dir exists, the migration code is a no-op. Note: if the task-tracker service was running OLD code during the upgrade, it will keep writing to `project-registry/` while CLI processes use `copalpm/` — users running the daemon must `copalpm service uninstall && copalpm service install` after upgrade.
 
 2. **`task-tracker` is hidden from `copalpm --help` but still callable.** The OS service spec invokes `copalpm task-tracker`. `cli._build_parser()` filters it out of `_choices_actions` after construction (argparse's `help=SUPPRESS` leaves an ugly `==SUPPRESS==` literal in `--help` output; the filter cleans that up).
 

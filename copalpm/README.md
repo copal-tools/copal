@@ -120,10 +120,10 @@ You can also push/pull from the CopalPM TUI directly (project detail screen → 
 
 User data lives under:
 
-- macOS / Linux: `~/.config/project-registry/`
-- Windows: `%APPDATA%\project-registry\`
+- macOS / Linux: `~/.config/copalpm/`
+- Windows: `%APPDATA%\copalpm\`
 
-> The folder name is still `project-registry` for backwards compatibility with installs from before the rebrand. A migration to `copalpm/` will land in a future release.
+> **Upgrading from a pre-rebrand install?** On first run, any data in `project-registry/` is automatically copied to `copalpm/`. The old directory is preserved as a backup — delete it manually once you've verified everything works. If the task-tracker service was running during the upgrade, restart it (`copalpm service uninstall && copalpm service install`) so it picks up the new path.
 
 Contents:
 - `registry.json` — list of registered projects

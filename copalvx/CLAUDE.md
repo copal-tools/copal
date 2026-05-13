@@ -380,7 +380,7 @@ Key bindings in `ProjectDetailScreen`:
 ### QoL-pm-2 additions (COMPLETE, 2026-05-07)
 
 **Template system (`E:\Development\ProjectRegistry`):**
-- Storage: `templates.json` in `DATA_DIR` (`%APPDATA%/project-registry/` on Windows)
+- Storage: `templates.json` in `DATA_DIR` (`%APPDATA%/copalpm/` on Windows; auto-migrated from `project-registry/` if present)
 - `config.py`: `TEMPLATES_FILE` path constant
 - `pm.py`: `DEFAULT_TEMPLATES` list (Tactical + Digital Signage, each with `folders` list), `load_templates()` (seeds defaults on first run), `save_templates()`
 - `tui_app.py` — `TemplateScreen`: DataTable with [N] new / [E] edit / [D] delete; `EditTemplateModal`: form with name, type, category, client, director, producer, folders (comma-separated input; supports nested paths like `02_Workfiles/Houdini`); `DashboardScreen [T]` opens templates; `InitScreen` builds RadioSet dynamically from `load_templates()` — adding/editing a template is reflected immediately next time New Project is opened

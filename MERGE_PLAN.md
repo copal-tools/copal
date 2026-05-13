@@ -77,7 +77,7 @@ Done inside the ProjectRegistry repo (not during the merge). Key outcomes:
 - ✅ Smoke tested: `copalpm --help`, `copalpm project list/status`, `copalpm record get` against existing registry (6 projects preserved)
 - ⏳ End-to-end CopalVX push integration test pending (requires server up + a real project folder — user verification)
 
-**Important:** user data directory stayed `project-registry/` (preserves existing data). A future migration step will move it to `copalpm/`.
+**Important:** user data directory initially stayed `project-registry/` to preserve existing data. ✅ Migrated to `copalpm/` in a follow-up via `_resolve_data_dir()` in `config.py` — one-time auto-copy on first import, legacy directory preserved as backup, falls back to legacy on failure. Covered by `tests/unit/test_data_dir_migration.py` (7 tests).
 
 **Breaking changes for any existing install:**
 - Pre-rebrand service installs (plist label `com.projectregistry.task-tracker` / NSSM service `TaskTracker`) must be removed before installing the new service. The old `pm uninstall-service` cleans them up cleanly.
@@ -143,8 +143,8 @@ These are real follow-ons but should not block or be bundled with the rebrand:
 
 ## Post-rebrand follow-ups (track separately)
 
-- **Stale Claude worktrees in `E:\Development\Copal-VX\.claude\worktrees\`.** Around 10 worktrees exist; most are 5-25 commits behind main. Triage list and remove dead branches/worktrees via `git worktree remove` + `git branch -D`. Not blocking Phase 3+ but worth a cleanup pass.
-- **User data directory migration** `project-registry/` → `copalpm/` with one-time auto-migrate on first run. Deferred from Phase 2 to preserve existing data.
+- ~~**Stale Claude worktrees in `E:\Development\Copal-VX\.claude\worktrees\`.**~~ ✅ Done 2026-05-13. 11 of 12 removed in one pass; the 12th (`mystifying-shannon-86b9b7`) was the active session at the time and removed separately from outside the worktree.
+- ~~**User data directory migration** `project-registry/` → `copalpm/` with one-time auto-migrate on first run.~~ ✅ Done 2026-05-13. Implemented in `config.py:_resolve_data_dir()`; tested in `tests/unit/test_data_dir_migration.py`.
 - **Archive old standalone repos** (`Sifdone/Copal-VX`, `Sifdone/ProjectRegistry`) after the monorepo is live — replace their READMEs with a redirect notice. Don't delete (preserves issue/PR history + external links).
 
 ## Risk notes
