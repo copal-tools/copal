@@ -1,14 +1,15 @@
-# src/project_tracker/time_cli.py
-# tt — time tracking CLI, a thin wrapper around the task-tracker HTTP service.
+# src/copalpm/time_cli.py
+# `copalpm time` — time tracking CLI, a thin wrapper around the task-tracker HTTP service.
 #
 # Usage (from inside a project folder):
-#   tt start "storyboard"
-#   tt start "compositing" --tool aftereffects --phase production
-#   tt stop
-#   tt status
-#   tt log 45 "client call"      # manual entry, bypasses service
+#   copalpm time start "storyboard"
+#   copalpm time start "compositing" --tool aftereffects --phase production
+#   copalpm time stop
+#   copalpm time status
+#   copalpm time log 45 "client call"      # manual entry, bypasses service
+#
+# The argparse setup lives in cli.py; cmd_* handlers below take the Namespace.
 
-import argparse
 import json
 import sys
 import uuid
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from project_registry.config import DATA_DIR, SESSIONS_LOG, REGISTRY
+from copalpm.config import DATA_DIR, SESSIONS_LOG, REGISTRY
 
 
 # ── Service client ─────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ from project_registry.config import DATA_DIR, SESSIONS_LOG, REGISTRY
 def _load_cfg() -> dict:
     cfg_path = DATA_DIR / "config.json"
     if not cfg_path.exists():
-        print("error: service not configured. Run `pm install-service` first.", file=sys.stderr)
+        print("error: service not configured. Run `copalpm service install` first.", file=sys.stderr)
         sys.exit(1)
     return json.loads(cfg_path.read_text(encoding="utf-8"))
 
@@ -61,7 +62,7 @@ def _api(method: str, endpoint: str, body: dict | None = None) -> dict:
         sys.exit(1)
     except urllib.error.URLError:
         print("error: task-tracker service is not running.", file=sys.stderr)
-        print("tip:   run `pm install-service` to set it up, or check `pm service-status`",
+        print("tip:   run `copalpm service install` to set it up, or check `copalpm service status`",
               file=sys.stderr)
         sys.exit(1)
 
@@ -240,47 +241,4 @@ def cmd_log(args):
     print(f"  Total  : {fmt_duration(total_s)}")
 
 
-# ── CLI entry point ────────────────────────────────────────────────────────────
-
-def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ap  = argparse.ArgumentParser(prog="tt", description="Time tracking CLI")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    # start
-    p_start = sub.add_parser("start", help="Start a tracking session")
-    p_start.add_argument("description", nargs="?", default=None,
-                         help="What you're working on, e.g. 'storyboard'")
-    p_start.add_argument("--project",  metavar="ID",   help="Project ID (defaults to CWD project)")
-    p_start.add_argument("--tool",     metavar="NAME",
-                         help="Tool in use: aftereffects, blender, illustrator, cli, etc.")
-    p_start.add_argument("--phase",    metavar="PHASE",
-                         help="Phase override (defaults to current phase in project.yaml)")
-
-    # stop
-    sub.add_parser("stop", help="Stop the current session")
-
-    # status
-    sub.add_parser("status", help="Show the current active session")
-
-    # log
-    p_log = sub.add_parser("log", help="Manually log time (no service required)")
-    p_log.add_argument("duration_min", type=int, help="Duration in minutes")
-    p_log.add_argument("description",  help="What you worked on")
-    p_log.add_argument("--tool",  metavar="NAME",  help="Tool used")
-    p_log.add_argument("--phase", metavar="PHASE", help="Phase override")
-
-    args = ap.parse_args()
-
-    dispatch = {
-        "start":  cmd_start,
-        "stop":   cmd_stop,
-        "status": cmd_status,
-        "log":    cmd_log,
-    }
-    dispatch[args.cmd](args)
-
-
-if __name__ == "__main__":
-    main()
+# Argparse setup and dispatch live in cli.py; this module only exports cmd_* handlers.

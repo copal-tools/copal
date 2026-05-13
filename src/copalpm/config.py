@@ -1,5 +1,9 @@
-# src/project_registry/config.py
-# Shared paths and configuration for all project-registry tools.
+# src/copalpm/config.py
+# Shared paths and configuration for all copalpm tools.
+#
+# NOTE: the user data directory name is intentionally still "project-registry"
+# so existing user data (registry.json, sessions.jsonl, time logs) is preserved
+# across the rebrand. A separate migration step will move it to "copalpm" later.
 
 import os
 import platform

@@ -1,11 +1,11 @@
-# src/project_registry/task_tracker.py
+# src/copalpm/task_tracker.py
 import os, json, threading, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify
 from waitress import serve
 
-from project_registry.config import DATA_DIR, CONFIG_FILE, SESSION_FILE, SESSIONS_LOG, REGISTRY
+from copalpm.config import DATA_DIR, CONFIG_FILE, SESSION_FILE, SESSIONS_LOG, REGISTRY
 
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,7 +171,7 @@ def start():
     exists = _project_exists(pid)
     if exists is None:
         return ({"error": "registry_missing",
-                 "hint": "No registry.json found. Create a project with `pm init` first."}, 409)
+                 "hint": "No registry.json found. Create a project with `copalpm project init` first."}, 409)
     if not exists:
         return ({"error": "unknown_project_id", "projectId": pid}, 404)
 

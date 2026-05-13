@@ -1,5 +1,5 @@
 """
-pm-tui — Textual TUI for ProjectRegistry.
+copalpm tui — Textual TUI for CopalPM.
 
 Screens:
   DashboardScreen     — all registered projects, live timer, click to open
@@ -28,9 +28,9 @@ from textual.widgets import (
 )
 from textual.widget import Widget
 
-from project_registry.config import DATA_DIR
-from project_registry import copalvx_api
-from project_registry.pm import (
+from copalpm.config import DATA_DIR
+from copalpm import copalvx_api
+from copalpm.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
     load_templates, save_templates, upsert_registry,

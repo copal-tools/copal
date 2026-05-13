@@ -1,16 +1,17 @@
-# src/project_tracker/project_record.py
-# project-record CLI — read, write, and query project.yaml records.
+# src/copalpm/project_record.py
+# `copalpm record` — read, write, and query project.yaml records.
 #
 # Usage (from anywhere inside a project folder):
-#   project show
-#   project get financial.quoted_budget
-#   project set deadline 2026-06-01
-#   project phase production
-#   project validate
-#   project sync-time
-#   project copalvx-update --project-name NAME --version TAG
+#   copalpm record show
+#   copalpm record get financial.quoted_budget
+#   copalpm record set deadline 2026-06-01
+#   copalpm record phase production
+#   copalpm record validate
+#   copalpm record sync-time
+#   copalpm record copalvx-update --project-name NAME --version TAG
+#
+# Argparse setup lives in cli.py; cmd_* handlers below take an argparse Namespace.
 
-import argparse
 import json
 import sys
 import urllib.request
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from project_registry.config import SESSIONS_LOG, DATA_DIR
+from copalpm.config import SESSIONS_LOG, DATA_DIR
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ VALID_CATEGORIES = {"tvc", "digital-signage", "b2b", "digital"}
 VALID_PHASES     = ["concept", "production", "delivery", "archive"]
 PHASE_ORDER      = {p: i for i, p in enumerate(VALID_PHASES)}
 
-# Fields that may not be written via `project set` (use dedicated commands instead)
+# Fields that may not be written via `copalpm record set` (use dedicated commands instead)
 READONLY_FIELDS  = {"id", "slug", "created_at", "phase_log", "time_entries",
                     "deliverables", "copalvx", "schema_version"}
 
@@ -90,9 +91,9 @@ def resolve_project(args) -> tuple[Path, dict]:
 
 def _find_by_id(project_id: str) -> Path:
     """Look up a project path from the registry by id."""
-    from project_registry.config import REGISTRY
+    from copalpm.config import REGISTRY
     if not REGISTRY.exists():
-        print("error: registry not found. Run `pm init` to create a project.", file=sys.stderr)
+        print("error: registry not found. Run `copalpm project init` to create a project.", file=sys.stderr)
         sys.exit(1)
     items = json.loads(REGISTRY.read_text(encoding="utf-8"))
     for item in items:
@@ -346,7 +347,7 @@ def cmd_set(args):
     top_key = args.field.split(".")[0]
     if top_key in READONLY_FIELDS:
         print(f"error: '{top_key}' cannot be set directly. "
-              f"Use dedicated commands (e.g. `project phase`).", file=sys.stderr)
+              f"Use dedicated commands (e.g. `copalpm record phase`).", file=sys.stderr)
         sys.exit(1)
 
     old_value = get_field(record, args.field)
@@ -458,7 +459,7 @@ def cmd_sync_time(args):
         sys.exit(1)
 
     if not SESSIONS_LOG.exists():
-        print("No sessions log found. Start tracking time with `task-tracker`.")
+        print("No sessions log found. Start tracking time with `copalpm time start`.")
         return
 
     # Build set of existing session_ids for deduplication
@@ -504,7 +505,7 @@ def cmd_sync_time(args):
 def cmd_copalvx_update(args):
     # Write CopalVX push metadata into the copalvx block of project.yaml.
     # Called by the CopalVX post-push hook — not intended for manual use.
-    # The copalvx block is readonly to `project set` deliberately; this command
+    # The copalvx block is readonly to `copalpm record set` deliberately; this command
     # is the only authorised writer.
     yaml_path, record = resolve_project(args)
 
@@ -518,71 +519,10 @@ def cmd_copalvx_update(args):
     print(f"copalvx block updated: {args.project_name} @ {args.version}")
 
 
-# ── CLI entry point ────────────────────────────────────────────────────────────
+# ── argparse helper (imported by cli.py) ──────────────────────────────────────
 
 def _add_location_args(parser):
     """Add --file and --project flags to any subcommand."""
     grp = parser.add_mutually_exclusive_group()
     grp.add_argument("--file",    metavar="PATH",  help="Explicit path to project.yaml")
     grp.add_argument("--project", metavar="ID",    help="Project ID to look up in registry")
-
-
-def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ap  = argparse.ArgumentParser(
-        prog="project",
-        description="Read, write, and query project.yaml records.",
-    )
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    # show
-    p_show = sub.add_parser("show", help="Pretty-print the project record with derived fields")
-    _add_location_args(p_show)
-
-    # get
-    p_get = sub.add_parser("get", help="Read a field value (supports dotted paths)")
-    p_get.add_argument("field", help="Field path, e.g. 'financial.quoted_budget'")
-    _add_location_args(p_get)
-
-    # set
-    p_set = sub.add_parser("set", help="Write a field value")
-    p_set.add_argument("field", help="Field path, e.g. 'deadline'")
-    p_set.add_argument("value", help="Value to set (null / true / false / number / string)")
-    _add_location_args(p_set)
-
-    # phase
-    p_phase = sub.add_parser("phase", help="Log a phase transition")
-    p_phase.add_argument("phase", choices=VALID_PHASES)
-    _add_location_args(p_phase)
-
-    # validate
-    p_val = sub.add_parser("validate", help="Validate the project record against the schema")
-    _add_location_args(p_val)
-
-    # sync-time
-    p_sync = sub.add_parser("sync-time", help="Pull sessions from sessions.jsonl into time_entries (idempotent)")
-    _add_location_args(p_sync)
-
-    # copalvx-update — written by the CopalVX post-push hook, not for manual use
-    p_cvu = sub.add_parser("copalvx-update", help="Write CopalVX push metadata into project.yaml (called by CopalVX hook)")
-    p_cvu.add_argument("--project-name", required=True, help="CopalVX project name used as the server-side identifier")
-    p_cvu.add_argument("--version",      required=True, help="CopalVX version tag that was just pushed (e.g. v1.3)")
-    _add_location_args(p_cvu)
-
-    args = ap.parse_args()
-
-    dispatch = {
-        "show":             cmd_show,
-        "get":              cmd_get,
-        "set":              cmd_set,
-        "phase":            cmd_phase,
-        "validate":         cmd_validate,
-        "sync-time":        cmd_sync_time,
-        "copalvx-update":   cmd_copalvx_update,
-    }
-    dispatch[args.cmd](args)
-
-
-if __name__ == "__main__":
-    main()

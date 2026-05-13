@@ -1,11 +1,11 @@
-# src/project_registry/pm.py
-import json, os, re, sys, platform, argparse
+# src/copalpm/pm.py
+import json, os, re, sys, platform
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-from project_registry.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
+from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
 
 
 DATA = DATA_DIR
@@ -229,7 +229,7 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
             "paid_at":         None,
         },
 
-        # Time tracking (populated by `project sync-time`)
+        # Time tracking (populated by `copalpm record sync-time`)
         "time_entries": [],
 
         # Deliverables
@@ -324,7 +324,7 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None 
     print(f"  project.yaml   : {yaml_path}")
     print(f"  registry       : {REG}")
     print(f"\n{pid}")
-    print(f"\n  Next: cd into the project folder and run  tt start  to begin tracking.")
+    print(f"\n  Next: cd into the project folder and run  copalpm time start  to begin tracking.")
 
 
 def cmd_list():
@@ -393,18 +393,12 @@ def load_project_yaml(path: Path) -> dict:
         return {}
 
 
-def _project_bin() -> str:
-    """Resolve the project executable in the same venv as this process."""
-    name = "project.exe" if sys.platform == "win32" else "project"
-    return str(Path(sys.executable).parent / name)
-
-
 def cmd_rollup(as_json: bool = False):
     """Sync all registered projects then total time from project.yaml time_entries."""
     import subprocess
     registry = load_registry()
     names    = {r["id"]: r.get("name", r["id"]) for r in registry}
-    project  = _project_bin()
+    copalpm  = str(_copalpm_bin())
 
     totals: dict[str, int] = {}
     for entry in registry:
@@ -413,7 +407,7 @@ def cmd_rollup(as_json: bool = False):
         if not yaml_path.exists():
             continue
         # Sync sessions.jsonl into project.yaml first (idempotent, silent)
-        subprocess.run([project, "sync-time", "--file", str(yaml_path)], capture_output=True)
+        subprocess.run([copalpm, "record", "sync-time", "--file", str(yaml_path)], capture_output=True)
         record = load_project_yaml(yaml_path)
         sec    = sum(int(te.get("duration_sec", 0)) for te in record.get("time_entries", []))
         if sec:
@@ -445,7 +439,7 @@ def cmd_status(as_json: bool = False):
     """Summary table of all registered projects."""
     registry = load_registry()
     if not registry:
-        print("No projects registered. Run `pm init` or `pm register` to add one.")
+        print("No projects registered. Run `copalpm project init` or `copalpm project register` to add one.")
         return
 
     rows = []
@@ -539,18 +533,18 @@ def cmd_remove(project_id: str) -> int:
 
 # ── Service management ─────────────────────────────────────────────────────────
 
-_PLIST_LABEL = "com.projectregistry.task-tracker"
+_PLIST_LABEL = "com.copal-tools.copalpm.task-tracker"
 _PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
+_NSSM_SERVICE = "CopalPMTaskTracker"
 
 
-def _task_tracker_bin() -> Path:
-    """Resolve the task-tracker executable (same venv as this process)."""
+def _copalpm_bin() -> Path:
+    """Resolve the copalpm executable in the same venv as this process."""
     bin_dir = Path(sys.executable).parent
-    # Windows entry-points are installed as .exe; other platforms have no extension
-    name   = "task-tracker.exe" if sys.platform == "win32" else "task-tracker"
-    binary = bin_dir / name
+    name    = "copalpm.exe" if sys.platform == "win32" else "copalpm"
+    binary  = bin_dir / name
     if not binary.exists():
-        print("error: task-tracker binary not found. Run `uv sync` first.", file=sys.stderr)
+        print("error: copalpm binary not found. Run `uv sync` first.", file=sys.stderr)
         sys.exit(1)
     return binary
 
@@ -561,7 +555,7 @@ def cmd_install_service():
     system = platform.system()
 
     if system == "Darwin":
-        binary = _task_tracker_bin()
+        binary = _copalpm_bin()
         DATA.mkdir(parents=True, exist_ok=True)
 
         plist = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -573,6 +567,7 @@ def cmd_install_service():
     <key>ProgramArguments</key>
     <array>
         <string>{binary}</string>
+        <string>task-tracker</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -620,7 +615,7 @@ def cmd_install_service():
             print("       Re-run this command in an Administrator PowerShell.", file=sys.stderr)
             sys.exit(1)
 
-        binary = _task_tracker_bin()
+        binary = _copalpm_bin()
         DATA.mkdir(parents=True, exist_ok=True)
 
         # Locate NSSM: prefer PATH, then the known install location.
@@ -629,13 +624,16 @@ def cmd_install_service():
             print(f"error: nssm not found. Install from https://nssm.cc and add to PATH.", file=sys.stderr)
             sys.exit(1)
 
-        svc = "TaskTracker"
+        svc = _NSSM_SERVICE
         # If a stale service entry exists from a previous install, remove it cleanly
         # before re-installing so NSSM doesn't fail with "service already exists".
         subprocess.run([nssm, "stop",   svc], capture_output=True)
         subprocess.run([nssm, "remove", svc, "confirm"], capture_output=True)
 
-        subprocess.run([nssm, "install",   svc, str(binary)],                         check=True)
+        # NSSM `install` takes: <service> <executable> <args...>
+        # We point at the `copalpm` binary and pass `task-tracker` as the subcommand
+        # so the daemon runs as `copalpm task-tracker` rather than a standalone exe.
+        subprocess.run([nssm, "install",   svc, str(binary), "task-tracker"],         check=True)
         subprocess.run([nssm, "set",       svc, "Start",     "SERVICE_AUTO_START"],    check=True)
         subprocess.run([nssm, "set",       svc, "AppStdout", str(DATA / "service.out.log")], check=True)
         subprocess.run([nssm, "set",       svc, "AppStderr", str(DATA / "service.err.log")], check=True)
@@ -686,8 +684,8 @@ def cmd_uninstall_service():
             print("       Re-run this command in an Administrator PowerShell.", file=sys.stderr)
             sys.exit(1)
         nssm = shutil.which("nssm") or r"C:\nssm-2.24\win64\nssm.exe"
-        subprocess.run([nssm, "stop",   "TaskTracker"], capture_output=True)
-        subprocess.run([nssm, "remove", "TaskTracker", "confirm"], check=True)
+        subprocess.run([nssm, "stop",   _NSSM_SERVICE], capture_output=True)
+        subprocess.run([nssm, "remove", _NSSM_SERVICE, "confirm"], check=True)
         print("Service uninstalled.")
     else:
         print(f"error: unsupported platform '{system}'.", file=sys.stderr)
@@ -699,7 +697,7 @@ def cmd_service_status():
 
     cfg_path = DATA / "config.json"
     if not cfg_path.exists():
-        print("Service not configured. Run `pm install-service` first.")
+        print("Service not configured. Run `copalpm service install` first.")
         return
 
     cfg     = json.loads(cfg_path.read_text())
@@ -733,67 +731,4 @@ def cmd_service_status():
         print(f"  Session : error ({e})")
 
 
-# ── CLI entry point ────────────────────────────────────────────────────────────
-
-def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    ap  = argparse.ArgumentParser(prog="pm", description="Project Manager CLI")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    a = sub.add_parser("init", help="Create a new project interactively")
-    a.add_argument("name", help="Project title")
-    a.add_argument("--dir", help="Base directory (defaults to CWD)")
-    a.add_argument("--inc", action="store_true", help="Append auto-incremented _NNN suffix")
-    quick = a.add_mutually_exclusive_group()
-    quick.add_argument("--tactical", action="store_true",
-                       help="Quick init: TLC Tactical (tlc/tvc/Public///, no prompts)")
-    quick.add_argument("--ds", action="store_true",
-                       help="Quick init: Digital Signage (tlc/digital-signage/Public, no prompts)")
-
-    sub.add_parser("list",   help="List registered projects")
-    sub.add_parser("status", help="Summary table of all registered projects").add_argument(
-        "--json", action="store_true", help="Output as JSON")
-    p_rollup = sub.add_parser("rollup", help="Total time per project (all sources)")
-    p_rollup.add_argument("--json", action="store_true", help="Output as JSON")
-    sub.add_parser("install-service",   help="Install and start the task-tracker background service")
-    sub.add_parser("uninstall-service", help="Stop and remove the task-tracker service")
-    sub.add_parser("service-status",    help="Show service state and current open session")
-
-    r = sub.add_parser("register", help="Register an existing project folder")
-    r.add_argument("path", help="Path to the project folder (must contain project.yaml)")
-
-    s = sub.add_parser("scan", help="Scan a directory tree and register all projects found")
-    s.add_argument("directory", help="Root directory to scan")
-
-    rm = sub.add_parser("remove", help="Remove a project from registry (keeps files on disk)")
-    rm.add_argument("project_id")
-
-    args = ap.parse_args()
-
-    if args.cmd == "init":
-        base   = Path(args.dir) if args.dir else Path.cwd()
-        preset = "tactical" if args.tactical else ("ds" if args.ds else None)
-        cmd_init(args.name, base, args.inc, preset=preset)
-    elif args.cmd == "list":
-        cmd_list()
-    elif args.cmd == "status":
-        cmd_status(as_json=args.json)
-    elif args.cmd == "register":
-        cmd_register(Path(args.path))
-    elif args.cmd == "scan":
-        cmd_scan(Path(args.directory))
-    elif args.cmd == "rollup":
-        cmd_rollup(as_json=args.json)
-    elif args.cmd == "remove":
-        sys.exit(cmd_remove(args.project_id))
-    elif args.cmd == "install-service":
-        cmd_install_service()
-    elif args.cmd == "uninstall-service":
-        cmd_uninstall_service()
-    elif args.cmd == "service-status":
-        cmd_service_status()
-
-
-if __name__ == "__main__":
-    main()
+# Argparse setup and dispatch live in cli.py; this module only exports cmd_* handlers.

@@ -1,12 +1,20 @@
 [project]
-name = "project-registry"
+name = "copalpm"
 version = "0.1.0"
-description = "Project and time tracking CLI for motion design and VFX work"
+description = "CopalPM — terminal project management and time tracking for motion design and VFX work. Companion to CopalVX."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{name = "The Copal Tools Authors"}]
+keywords = ["vfx", "project-management", "time-tracking", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Scheduling",
+]
 dependencies = [
     "flask>=3.1.2",
     "waitress>=3.0.2",
@@ -14,13 +22,12 @@ dependencies = [
     "textual>=0.59",
 ]
 
+[project.urls]
+Homepage = "https://copalpm.app"
+Source = "https://github.com/copal-tools/copal"
+
 [project.scripts]
-pm           = "project_registry.pm:main"
-task-tracker = "project_registry.task_tracker:main"
-project      = "project_registry.project_record:main"
-tt           = "project_registry.time_cli:main"
-deliver      = "project_registry.deliver_cli:main"
-pm-tui       = "project_registry.tui_app:main"
+copalpm = "copalpm.cli:main"
 
 [build-system]
 requires = ["hatchling"]
