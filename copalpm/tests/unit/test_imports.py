@@ -83,9 +83,10 @@ def test_import_tui_main():
 
 def test_import_config():
     from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
-    # DATA_DIR name stays as "project-registry" — preserves existing user data
-    # across the rebrand. See gotcha #17 in CopalVX CLAUDE.md.
-    assert "project-registry" in str(DATA_DIR)
+    # Post-migration DATA_DIR is `copalpm/`. On a system where the auto-migration
+    # fell back (e.g. permission error), it can still be the legacy
+    # `project-registry/` path — accept either to keep the test robust.
+    assert DATA_DIR.name in ("copalpm", "project-registry")
 
 
 def test_import_copalvx_api():
