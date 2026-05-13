@@ -233,9 +233,13 @@ Each machine has `~/.copal/config.json` (auto-created on first run):
 
 ## Server deployment
 
-**Server lives on a separate Linux machine** (or wherever Docker runs).
+**Canonical location:** `/opt/copal/copalvx/server/` on the LAN server box.
+**Full runbook:** [server/DEPLOY.md](./server/DEPLOY.md) — read it before any
+deploy. The runbook covers routine, schema, breaking-protocol, and
+clean-slate deploys, plus the storage-contract rules and rollback steps.
 
-**Environment:** `server/.env` (not in git — must be created manually):
+**Environment:** `server/.env` (gitignored, created manually from
+`.env.example`):
 ```env
 POSTGRES_USER=admin
 POSTGRES_PASSWORD=<strong_password>
@@ -247,20 +251,12 @@ PUBLIC_ACCESS_HOST=192.168.1.100
 LOG_LEVEL=INFO
 ```
 
-**Deploy workflow:**
-```bash
-# On dev machine (Windows desktop):
-git push
-
-# On server:
-git pull
-docker-compose up -d --build asset-api   # rebuild API only (DB + SeaweedFS keep running)
-```
-
-Full restart (all containers, ~30s downtime):
-```bash
-docker-compose down && docker-compose up -d
-```
+**Storage contract — the rule that's bitten us:** every directory inside a
+container that holds state MUST be on a host-mounted volume. The
+`docker-compose.yml` lists the four paths that hold state today (Postgres
+data, SeaweedFS hot/cold volumes, SeaweedFS filer leveldb). Adding new
+SeaweedFS features (SSE-S3 keys, etc.) means auditing for new state dirs
+and mounting them. See DEPLOY.md "Storage contract" and "Lessons learned".
 
 **Replication note:** SeaweedFS replication is set to `000` (no replication).
 `001` requires 2+ volume server instances — this is a single-machine setup.
