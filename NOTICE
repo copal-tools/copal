@@ -1,0 +1,11 @@
+Copal Tools
+Copyright 2026 The Copal Tools Authors
+
+This product bundles the following packages, each licensed under
+the Apache License, Version 2.0:
+
+  copalvx/   — content-addressable version exchange (CopalVX)
+  copalpm/   — terminal project + time tracking (CopalPM)
+
+See the LICENSE file in this directory for the full Apache 2.0 license
+text, and each package's NOTICE file for its individual attribution.
