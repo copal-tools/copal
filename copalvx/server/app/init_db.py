@@ -4,7 +4,7 @@ import argparse
 from sqlalchemy import create_engine, text
 
 # --- CONFIGURATION ---
-DEFAULT_URL = "postgresql://admin:CHANGE_ME_IN_DOT_ENV@192.168.178.161:5432/asset_system"
+DEFAULT_URL = "postgresql://admin:CHANGE_ME_IN_DOT_ENV@192.168.1.100:5432/asset_system"
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_URL)
 
 CLEAN_SLATE_SQL = """

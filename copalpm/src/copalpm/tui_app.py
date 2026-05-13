@@ -320,7 +320,7 @@ class InitScreen(Screen):
                 # can compute their full virtual height (nested Vertical clips them).
                 yield Label("Type", classes="field-label custom-field")
                 yield Select(
-                    [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
+                    [("Internal", "tlc"), ("Client", "client"), ("Personal", "personal")],
                     value="tlc", allow_blank=False, id="type-select", classes="custom-field",
                 )
                 yield Label("Category", classes="field-label custom-field")
@@ -333,10 +333,10 @@ class InitScreen(Screen):
                 yield Input(placeholder="Client name (optional)", id="client-input",
                             classes="custom-field")
                 yield Label("Director", classes="field-label custom-field")
-                yield Input(placeholder="e.g.  (optional)", id="director-input",
+                yield Input(placeholder="Agency / director (optional)", id="director-input",
                             classes="custom-field")
                 yield Label("Producer", classes="field-label custom-field")
-                yield Input(placeholder="e.g.  (optional)", id="producer-input",
+                yield Input(placeholder="Producer (optional)", id="producer-input",
                             classes="custom-field")
                 yield Label("Deadline", classes="field-label custom-field")
                 yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input",
@@ -1297,7 +1297,7 @@ class EditTemplateModal(ModalScreen):
                 yield Input(value=self._template.get("name", ""), placeholder="Template name", id="tmpl-name")
                 yield Label("Type", classes="field-label")
                 yield Select(
-                    [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
+                    [("Internal", "tlc"), ("Client", "client"), ("Personal", "personal")],
                     value=self._template.get("type", "tlc"), allow_blank=False, id="tmpl-type",
                 )
                 yield Label("Category", classes="field-label")
@@ -1307,11 +1307,11 @@ class EditTemplateModal(ModalScreen):
                     value=self._template.get("category", "tvc"), allow_blank=False, id="tmpl-category",
                 )
                 yield Label("Client", classes="field-label")
-                yield Input(value=self._template.get("client") or "", placeholder="e.g. Public", id="tmpl-client")
+                yield Input(value=self._template.get("client") or "", placeholder="Client name", id="tmpl-client")
                 yield Label("Director", classes="field-label")
-                yield Input(value=self._template.get("director") or "", placeholder="e.g.  (optional)", id="tmpl-director")
+                yield Input(value=self._template.get("director") or "", placeholder="Agency / director (optional)", id="tmpl-director")
                 yield Label("Producer", classes="field-label")
-                yield Input(value=self._template.get("producer") or "", placeholder="e.g.  (optional)", id="tmpl-producer")
+                yield Input(value=self._template.get("producer") or "", placeholder="Producer (optional)", id="tmpl-producer")
                 yield Label("Folders (comma-separated)", classes="field-label")
                 default_folders = "01_Intake, 02_Workfiles, 03_Exports"
                 folders_val = ", ".join(self._template.get("folders", [])) or default_folders

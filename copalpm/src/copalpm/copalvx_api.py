@@ -18,7 +18,7 @@ def _config() -> dict:
 
 def _base_url() -> str:
     cfg = _config()
-    ip   = cfg.get("server_ip", "192.168.178.161")
+    ip   = cfg.get("server_ip", "192.168.1.100")
     port = cfg.get("api_port", 8005)
     return f"http://{ip}:{port}"
 

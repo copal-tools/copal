@@ -74,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Append auto-incremented _NNN suffix")
     quick = p_init.add_mutually_exclusive_group()
     quick.add_argument("--tactical", action="store_true",
-                       help="Quick init: TLC Tactical preset")
+                       help="Quick init: Tactical preset")
     quick.add_argument("--ds", action="store_true",
                        help="Quick init: Digital Signage preset")
 

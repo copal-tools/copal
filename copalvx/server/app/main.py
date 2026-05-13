@@ -27,7 +27,7 @@ SEAWEED_FILER_URL = f"{_master.scheme}://{_master.hostname}:{SEAWEED_FILER_PORT}
 
 # Public IP (What we send to the client)
 # In Docker this comes from the compose env. Locally, defaults to your server IP.
-SERVER_PUBLIC_IP = os.getenv("PUBLIC_ACCESS_HOST", "192.168.178.161")
+SERVER_PUBLIC_IP = os.getenv("PUBLIC_ACCESS_HOST", "192.168.1.100")
 
 
 def get_upload_url(replication="000"):

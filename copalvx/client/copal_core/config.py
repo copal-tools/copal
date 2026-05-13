@@ -9,7 +9,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # 2. Default Settings (Fallback)
 DEFAULT_CONFIG = {
-    "server_ip": "192.168.178.161",
+    "server_ip": "192.168.1.100",
     "api_port": 8005,
     "filer_port": 8888,
     "default_author": getpass.getuser(),

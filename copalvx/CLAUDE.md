@@ -236,13 +236,13 @@ They can be different. CopalVX doesn't know about or care about ProjectRegistry 
 Each machine has `~/.copal/config.json` (auto-created on first run):
 ```json
 {
-    "server_ip": "192.168.178.161",
+    "server_ip": "192.168.1.100",
     "api_port": 8005,
     "filer_port": 8888,
-    "default_author": "simon",
+    "default_author": "yourname",
     "default_projects_root": "D:\\Projects",
     "conflict_policy": "backup",
-    "client_path": "E:\\Development\\Copal-VX\\client"
+    "client_path": "E:\\Development\\copal\\copalvx\\client"
 }
 ```
 
@@ -272,7 +272,7 @@ POSTGRES_DB=asset_system
 SEAWEED_MASTER_URL=http://seaweedfs:9333
 WEED_S3_ACCESS_KEY=
 WEED_S3_SECRET_KEY=
-PUBLIC_ACCESS_HOST=192.168.178.161
+PUBLIC_ACCESS_HOST=192.168.1.100
 LOG_LEVEL=INFO
 ```
 
@@ -691,7 +691,7 @@ Integration tests auto-skip if the server is unreachable (`_ensure_server` autou
 ### Integration test design
 
 - A module-scoped `project` fixture creates a UUID-named project (`__pytest_<hex>__`) before tests run and deletes it (including orphan blobs) after — leaves the server clean.
-- `COPALVX_SERVER_URL` env var overrides the default `http://192.168.178.161:8005`.
+- `COPALVX_SERVER_URL` env var overrides the default `http://192.168.1.100:8005`.
 - `TestBodySizeLimit` sends a genuine 11 MB payload (`b"x" * 11_534_336`) — `requests` always sets real `Content-Length` so the fake-header approach doesn't work. Catches `ConnectionError` as also-valid rejection (server may close the socket after sending 413 mid-upload).
 
 ### Dev dependencies

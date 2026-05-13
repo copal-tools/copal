@@ -992,7 +992,7 @@ def setup_cli():
             except ValueError:
                 print(f"  {red('Must be a whole number.')}")
 
-    server_ip  = ask    ("Server IP",     "server_ip",             "192.168.178.161")
+    server_ip  = ask    ("Server IP",     "server_ip",             "192.168.1.100")
     api_port   = ask_int("API port",      "api_port",              8005)
     filer_port = ask_int("Filer port",    "filer_port",            8888)
     author     = ask    ("Author",         "default_author",        getpass.getuser())

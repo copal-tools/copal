@@ -21,7 +21,7 @@ import uuid
 import pytest
 import requests
 
-BASE = os.getenv("COPALVX_SERVER_URL", "http://192.168.178.161:8005")
+BASE = os.getenv("COPALVX_SERVER_URL", "http://192.168.1.100:8005")
 # Unique name so parallel runs or interrupted tests don't collide
 PROJECT = f"__pytest_{uuid.uuid4().hex[:10]}__"
 

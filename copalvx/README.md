@@ -29,7 +29,7 @@ brew install uv
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 # 3. Install CopalVX
-uv tool install "git+https://github.com/Sifdone/Copal-VX.git#subdirectory=client"
+uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalvx/client"
 
 # 4. Configure (server IP, author name, projects root)
 copalvx setup
@@ -42,7 +42,7 @@ copalvx setup
 winget install astral-sh.uv
 
 # 2. Install CopalVX
-uv tool install "git+https://github.com/Sifdone/Copal-VX.git#subdirectory=client"
+uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalvx/client"
 
 # 3. Configure
 copalvx setup
@@ -62,8 +62,8 @@ The server runs on a dedicated Linux machine via Docker Compose.
 
 ```bash
 # Clone the repo on the server
-git clone https://github.com/Sifdone/Copal-VX.git
-cd Copal-VX/server
+git clone https://github.com/copal-tools/copal.git
+cd copal/copalvx/server
 
 # Create .env from the template and fill in your values
 cp .env.example .env
@@ -93,7 +93,7 @@ The dashboard shows system health (API / DB / SeaweedFS), lists all projects, an
 
 ## Integration with ProjectRegistry
 
-Push and pull can also be triggered from the ProjectRegistry TUI using the `p` and `l` keybindings in the project detail screen. See the [ProjectRegistry repo](https://github.com/Sifdone/ProjectRegistry) for setup.
+Push and pull can also be triggered from the CopalPM TUI using the `p` and `l` keybindings in the project detail screen. See [copalpm/](../copalpm/) in this monorepo for setup.
 
 ---
 
@@ -103,7 +103,7 @@ Stored at `~/.copal/config.json` after running `copalvx setup`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `server_ip` | `192.168.178.161` | Server address |
+| `server_ip` | `192.168.1.100` | Server address (set during `copalvx setup`) |
 | `api_port` | `8005` | FastAPI port |
 | `filer_port` | `8888` | SeaweedFS filer port |
 | `default_author` | system username | Name used in commits |
