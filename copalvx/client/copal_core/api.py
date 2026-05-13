@@ -1,3 +1,4 @@
+import re
 import socket
 import requests
 from requests.exceptions import ConnectionError, Timeout
@@ -5,18 +6,47 @@ from .config import ENDPOINTS, API_BASE, SETTINGS
 
 API_TIMEOUT = (10, 30)
 
+# Destructive endpoints (DELETE /projects, POST /admin/cleanup-orphans) require
+# this header. The value is a fixed sentinel — its purpose is to block accidental
+# DELETEs from runaway scripts or stale automation, not to authenticate (auth is
+# Phase 7).  Sent automatically by every client helper that performs a delete.
+CONFIRM_DELETE_HEADER = "X-Confirm-Delete"
+CONFIRM_DELETE_VALUE = "yes-permanently"
+
+# Identity headers are bounded at the server side; clamp here too so the request
+# fails fast with a sensible error rather than a 4xx from the server.
+_IDENT_RE = re.compile(r"^[\w.@-]+$")
+_IDENT_MAX_LEN = 64
+
+
+def _sanitize_ident(value: str, fallback: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return fallback
+    v = v[:_IDENT_MAX_LEN]
+    return v if _IDENT_RE.match(v) else fallback
+
 
 def _identity_headers() -> dict:
     """Headers identifying the caller for the server-side activity log.
 
     User is taken from the configured default_author (which falls back to
-    getpass.getuser()); host is socket.gethostname(). Re-evaluated on every
-    call so config edits take effect without a client restart.
+    getpass.getuser()); host is socket.gethostname(). Both are clamped to 64
+    chars of ``[\\w.@-]`` so a malformed config can't trip the server's input
+    validator. Re-evaluated on every call so config edits take effect without
+    a client restart.
     """
     return {
-        "X-Copal-User": SETTINGS.get("default_author", "unknown"),
-        "X-Copal-Host": socket.gethostname() or "unknown",
+        "X-Copal-User": _sanitize_ident(SETTINGS.get("default_author"), "unknown"),
+        "X-Copal-Host": _sanitize_ident(socket.gethostname(), "unknown"),
     }
+
+
+def _confirm_delete_headers() -> dict:
+    """Composite headers for a destructive call: identity + delete confirmation."""
+    h = _identity_headers()
+    h[CONFIRM_DELETE_HEADER] = CONFIRM_DELETE_VALUE
+    return h
 
 def handshake(project_name, local_assets):
     """Asks server which files are missing."""
@@ -221,10 +251,25 @@ def delete_project(project_name, delete_orphan_files=False):
         resp = requests.delete(
             f"{API_BASE}/projects/{project_name}",
             json={"delete_orphan_files": delete_orphan_files},
+            headers=_confirm_delete_headers(),
             timeout=(10, 60),
         )
         if resp.status_code == 404:
             raise ValueError(f"Project '{project_name}' not found.")
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout) as e:
+        raise ConnectionError(f"Cannot reach server at {API_BASE}") from e
+
+
+def cleanup_orphans():
+    """Trigger admin orphan-blob cleanup. Returns response dict."""
+    try:
+        resp = requests.post(
+            f"{API_BASE}/admin/cleanup-orphans",
+            headers=_confirm_delete_headers(),
+            timeout=(10, 60),
+        )
         resp.raise_for_status()
         return resp.json()
     except (ConnectionError, Timeout) as e:

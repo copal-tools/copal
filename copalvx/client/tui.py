@@ -76,8 +76,21 @@ def _header(subtitle="Asset Dashboard"):
     print()
 
 
+# Progress bar throttling: avoid one stdout.flush() per file on 10 k-file pulls.
+# Flush at most once every 100 ms — and always flush the terminal/final state so
+# the bar always ends at 100 %.
+_PROGRESS_FLUSH_INTERVAL = 0.1
+_progress_state = {"last_flush": 0.0}
+
+
 def print_progress(current, total, message):
     """Text progress bar used during push/pull operations."""
+    now = time.monotonic()
+    is_terminal = current >= total or current == 0
+    if not is_terminal and (now - _progress_state["last_flush"]) < _PROGRESS_FLUSH_INTERVAL:
+        return
+    _progress_state["last_flush"] = now
+
     pct = (current / total * 100) if total else 0
     filled = int(30 * current // max(total, 1))
     bar = "█" * filled + "─" * (30 - filled)
@@ -886,7 +899,13 @@ def push_cli(project, tag, path, message=None, author=None):
                 to_upload.append(f)
         engine    = SyncEngine(max_threads=8)
 
+        upload_progress_state = {"last": 0.0}
+
         def _upload_progress(done, total, msg):
+            now = time.monotonic()
+            if done < total and (now - upload_progress_state["last"]) < _PROGRESS_FLUSH_INTERVAL:
+                return
+            upload_progress_state["last"] = now
             print(f"[UPLOAD] {done}/{total} {msg}", flush=True)
 
         successful_uploads = engine.execute_upload_plan(to_upload, progress_callback=_upload_progress)
@@ -977,7 +996,13 @@ def pull_cli(project, tag, target, policy="backup", prefixes=None):
     engine = SyncEngine(conflict_policy=policy, max_threads=8)
     plan   = engine.generate_plan(files, target, last_manifest_hashes=last_manifest_hashes)
 
+    download_progress_state = {"last": 0.0}
+
     def _download_progress(done, total, msg):
+        now = time.monotonic()
+        if done < total and (now - download_progress_state["last"]) < _PROGRESS_FLUSH_INTERVAL:
+            return
+        download_progress_state["last"] = now
         print(f"[DOWNLOAD] {done}/{total} {msg}", flush=True)
 
     results = engine.execute_plan(plan, progress_callback=_download_progress)

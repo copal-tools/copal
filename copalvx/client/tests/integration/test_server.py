@@ -25,6 +25,12 @@ BASE = os.getenv("COPALVX_SERVER_URL", "http://192.168.1.100:8005")
 # Unique name so parallel runs or interrupted tests don't collide
 PROJECT = f"__pytest_{uuid.uuid4().hex[:10]}__"
 
+# Identity + delete-confirmation headers — every test that hits a write endpoint
+# needs at least the identity pair; destructive endpoints additionally need the
+# confirm-delete header. The values match what the production client sends.
+IDENT_HEADERS = {"X-Copal-User": "pytest", "X-Copal-Host": "pytest-runner"}
+CONFIRM_DELETE_HEADERS = {**IDENT_HEADERS, "X-Confirm-Delete": "yes-permanently"}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -48,6 +54,7 @@ def project():
     requests.delete(
         f"{BASE}/projects/{PROJECT}",
         json={"delete_orphan_files": True},
+        headers=CONFIRM_DELETE_HEADERS,
         timeout=10,
     )
 
@@ -171,7 +178,7 @@ class TestVersionTagValidation:
             "message":     "test",
             "author":      "pytest",
             "files":       [],
-        }, timeout=5)
+        }, headers=IDENT_HEADERS, timeout=5)
         assert r.status_code == 422, (
             f"L6 regression: tag '{bad_tag}' should be rejected but got {r.status_code}"
         )
@@ -190,7 +197,7 @@ class TestVersionTagValidation:
             "message":     "pytest validation check",
             "author":      "pytest",
             "files":       [],
-        }, timeout=5)
+        }, headers=IDENT_HEADERS, timeout=5)
         # 200 = success, 409 = tag already used (fine — it passed format validation)
         assert r.status_code in (200, 409), (
             f"L6 regression: valid tag '{good_tag}' was rejected with {r.status_code}: {r.text}"
@@ -203,12 +210,100 @@ class TestVersionTagValidation:
 
 class TestCleanupOrphans:
     def test_endpoint_exists_and_returns_ok(self):
-        r = requests.post(f"{BASE}/admin/cleanup-orphans", timeout=10)
+        r = requests.post(
+            f"{BASE}/admin/cleanup-orphans",
+            headers=CONFIRM_DELETE_HEADERS,
+            timeout=10,
+        )
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
         assert isinstance(data["assets_deleted"], int)
         assert isinstance(data["blobs_deleted"], int)
+
+    def test_endpoint_rejects_without_confirm_header(self):
+        """Sec-A.4 — destructive admin op requires X-Confirm-Delete."""
+        r = requests.post(f"{BASE}/admin/cleanup-orphans", timeout=10)
+        assert r.status_code == 400, (
+            f"Sec-A.4 regression: expected 400 without X-Confirm-Delete, got {r.status_code}"
+        )
+
+
+class TestDeleteConfirmation:
+    def test_delete_rejects_without_confirm_header(self):
+        """Sec-A.4 — DELETE /projects requires X-Confirm-Delete.
+
+        Uses its OWN throwaway project so an un-patched server that ignores
+        the new header (i.e. returns 200) won't accidentally delete the
+        module-scoped ``project`` fixture and break downstream tests.
+        """
+        disposable = f"__pytest_delconf_{uuid.uuid4().hex[:8]}__"
+        # Create the project so DELETE has something real to act on.
+        requests.post(f"{BASE}/projects", json={"name": disposable}, timeout=5)
+        try:
+            r = requests.delete(
+                f"{BASE}/projects/{disposable}",
+                json={"delete_orphan_files": False},
+                timeout=10,
+            )
+            assert r.status_code == 400, (
+                f"Sec-A.4 regression: expected 400, got {r.status_code}"
+            )
+        finally:
+            # Clean up regardless of pass/fail — uses the confirm header so
+            # this teardown works on a patched server too.
+            requests.delete(
+                f"{BASE}/projects/{disposable}",
+                json={"delete_orphan_files": True},
+                headers=CONFIRM_DELETE_HEADERS,
+                timeout=10,
+            )
+
+
+class TestIdentityHeaders:
+    def test_commit_rejects_missing_host_header(self, project):
+        """Sec-A.5 — /commit must require X-Copal-Host."""
+        r = requests.post(f"{BASE}/commit", json={
+            "project_id":  project,
+            "version_tag": "v9.9.99",
+            "message":     "no header test",
+            "author":      "pytest",
+            "files":       [],
+        }, timeout=5)
+        assert r.status_code == 422, (
+            f"Sec-A.5 regression: expected 422 without X-Copal-Host, got {r.status_code}"
+        )
+
+    def test_commit_rejects_malformed_host_header(self, project):
+        """Sec-A.5 — bad chars in X-Copal-Host are rejected.
+
+        Note: the ``requests`` library refuses to *send* a header containing
+        \\r, \\n, or \\t (it raises InvalidHeader client-side), so we test
+        with a value that's transmissible but outside our ``[\\w.@-]`` charset.
+        """
+        r = requests.post(f"{BASE}/commit", json={
+            "project_id":  project,
+            "version_tag": "v9.9.98",
+            "message":     "bad header test",
+            "author":      "pytest",
+            "files":       [],
+        }, headers={"X-Copal-Host": "evil host with space"}, timeout=5)
+        assert r.status_code == 422, (
+            f"Sec-A.5 regression: expected 422 for bad X-Copal-Host, got {r.status_code}"
+        )
+
+    def test_commit_rejects_overlong_host_header(self, project):
+        """Sec-A.5 — values over 64 chars must be rejected."""
+        r = requests.post(f"{BASE}/commit", json={
+            "project_id":  project,
+            "version_tag": "v9.9.97",
+            "message":     "long header test",
+            "author":      "pytest",
+            "files":       [],
+        }, headers={"X-Copal-Host": "a" * 65}, timeout=5)
+        assert r.status_code == 422, (
+            f"Sec-A.5 regression: expected 422 for 65-char host, got {r.status_code}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -217,26 +312,25 @@ class TestCleanupOrphans:
 
 class TestBodySizeLimit:
     def test_oversized_payload_rejected(self, project):
-        """L3 fix: a payload genuinely over 10 MB must be rejected with 413.
+        """A payload over the configured limit must be rejected with 413.
 
-        The requests library always sets Content-Length to the actual body size,
-        so we have to send real data.  11 MB on a LAN transfers in < 1 s and the
-        middleware rejects based on Content-Length before reading the body.
+        Default is now 50 MB (was 10) — large bulk commits with ~40 k file
+        entries used to bump up against the old 10 MB cap. The test sends 60 MB.
 
         Uvicorn may close the connection before we finish uploading (after
         sending the 413), which surfaces as a ConnectionError on the client —
         that outcome is also a correct rejection.
         """
-        large_body = b"x" * (11 * 1024 * 1024)  # 11 MB > default 10 MB limit
+        large_body = b"x" * (60 * 1024 * 1024)  # 60 MB > default 50 MB limit
         try:
             r = requests.post(
                 f"{BASE}/handshake",
                 data=large_body,
                 headers={"Content-Type": "application/octet-stream"},
-                timeout=30,
+                timeout=60,
             )
             assert r.status_code == 413, (
-                f"L3 regression: expected 413 for {len(large_body) // (1024 * 1024)} MB "
+                f"Body-limit regression: expected 413 for {len(large_body) // (1024 * 1024)} MB "
                 f"payload, got {r.status_code}"
             )
         except requests.exceptions.ConnectionError:
@@ -263,7 +357,7 @@ class TestVersionDiff:
                 "message":     f"pytest diff fixture {tag}",
                 "author":      "pytest",
                 "files":       [],
-            }, timeout=5)
+            }, headers=IDENT_HEADERS, timeout=5)
             assert r.status_code in (200, 409), f"Could not create commit {tag}: {r.text}"
 
     def test_diff_nonexistent_project_returns_404(self):

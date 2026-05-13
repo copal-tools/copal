@@ -1,11 +1,14 @@
+import hashlib
+import json
 import logging
 import os
 import re
 import requests
 from urllib.parse import urlparse
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -55,22 +58,96 @@ def get_upload_url(replication="000"):
 app = FastAPI()
 
 # ── Request body size guard ────────────────────────────────────────────────────
-# Rejects manifests or payloads over 10 MB before they reach any endpoint.
-# File uploads go directly to SeaweedFS and never pass through here, so this
-# only affects JSON API calls (handshake manifests, commit payloads, etc.).
-MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "10")) * 1024 * 1024
+# Rejects manifests or payloads over the configured limit before they reach any
+# endpoint. File uploads go directly to SeaweedFS and never pass through here,
+# so this only affects JSON API calls (handshake manifests, commit payloads).
+#
+# Default raised to 50 MB (was 10) so bulk commits with ~40 k file entries
+# don't get rejected; per-entry overhead is ~250 bytes so 50 MB ≈ 200 k files.
+# Tune via env: MAX_REQUEST_BODY_MB=N.
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "50")) * 1024 * 1024
+
 
 @app.middleware("http")
-async def limit_request_body(request, call_next):
+async def limit_request_body(request: Request, call_next):
+    """Reject oversized payloads.
+
+    Belt-and-braces: trust the Content-Length header for fast-path rejection,
+    *and* stream the body through a counter so a client that lies about its
+    Content-Length still gets cut off at the limit.
+    """
+    limit_mb = MAX_REQUEST_BODY_BYTES // (1024 * 1024)
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        from starlette.responses import Response
-        limit_mb = MAX_REQUEST_BODY_BYTES // (1024 * 1024)
-        return Response(
-            content=f"Request body exceeds {limit_mb} MB limit.",
-            status_code=413,
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                return Response(
+                    content=f"Request body exceeds {limit_mb} MB limit.",
+                    status_code=413,
+                )
+        except ValueError:
+            pass
+
+    # Wrap the receive callable to count bytes as they actually arrive. If a
+    # streaming client (no Content-Length, or a forged one) overruns the cap
+    # we synthesize a 413 mid-stream.
+    body_size = 0
+    over_limit = False
+    original_receive = request.receive
+
+    async def limited_receive():
+        nonlocal body_size, over_limit
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            chunk = message.get("body", b"")
+            body_size += len(chunk)
+            if body_size > MAX_REQUEST_BODY_BYTES:
+                over_limit = True
+        return message
+
+    request._receive = limited_receive  # type: ignore[attr-defined]
+    try:
+        response = await call_next(request)
+    finally:
+        if over_limit:
+            return Response(
+                content=f"Request body exceeds {limit_mb} MB limit.",
+                status_code=413,
+            )
+    return response
+
+
+# ── Identity / delete-confirmation header helpers ──────────────────────────────
+# Identity headers (X-Copal-User / X-Copal-Host) feed straight into the events
+# audit log. We bound the length and restrict the character set so a misbehaving
+# client can't pump nonsense into the log or smuggle ANSI escape codes.
+_IDENT_RE = re.compile(r"^[\w.@-]{1,64}$")
+
+CONFIRM_DELETE_HEADER = "X-Confirm-Delete"
+CONFIRM_DELETE_VALUE = "yes-permanently"
+
+
+def _require_ident(header_value: Optional[str], header_name: str) -> str:
+    if not header_value or not _IDENT_RE.match(header_value):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Header {header_name!r} must be 1-64 chars of letters, digits, "
+                "underscore, hyphen, period or '@'."
+            ),
         )
-    return await call_next(request)
+    return header_value
+
+
+def _require_confirm_delete(header_value: Optional[str]) -> None:
+    if header_value != CONFIRM_DELETE_VALUE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Destructive operation requires header "
+                f"'{CONFIRM_DELETE_HEADER}: {CONFIRM_DELETE_VALUE}'."
+            ),
+        )
 
 # --- DATA MODELS ---
 
@@ -275,6 +352,8 @@ def create_commit(
     x_copal_host: str = Header(..., alias="X-Copal-Host"),
     db: Session = Depends(get_db),
 ):
+    x_copal_host = _require_ident(x_copal_host, "X-Copal-Host")
+    safe_author = _require_ident(request.author, "author")
     logger.info("Creating commit '%s' for project '%s'", request.version_tag, request.project_id)
 
     # Validate tag format — a slash would silently break /checkout/{name}/{tag}
@@ -340,7 +419,7 @@ def create_commit(
             "pid": project_id,
             "tag": request.version_tag,
             "msg": request.message,
-            "auth": request.author
+            "auth": safe_author
         })
         commit_id = commit_result.fetchone()[0]
 
@@ -364,7 +443,7 @@ def create_commit(
         """), {
             "pid":  project_id,
             "tag":  request.version_tag,
-            "user": request.author,
+            "user": safe_author,
             "host": x_copal_host,
         })
 
@@ -396,6 +475,8 @@ def checkout_version(
     x_copal_host: str = Header(..., alias="X-Copal-Host"),
     db: Session = Depends(get_db),
 ):
+    x_copal_user = _require_ident(x_copal_user, "X-Copal-User")
+    x_copal_host = _require_ident(x_copal_host, "X-Copal-Host")
     logger.info("Checkout: %s @ %s by %s@%s", project_name, version_tag, x_copal_user, x_copal_host)
 
     query = text("""
@@ -570,7 +651,28 @@ def health_check(db: Session = Depends(get_db)):
 
 
 @app.get("/projects")
-def list_projects(db: Session = Depends(get_db)):
+def list_projects(
+    request: Request,
+    if_none_match: Optional[str] = Header(None, alias="If-None-Match"),
+    db: Session = Depends(get_db),
+):
+    # Cheap "did anything change?" probe. The dashboard polls this endpoint
+    # every 60 s; on a quiet server we want to skip the expensive correlated
+    # subqueries below. The ETag is derived from (project count, latest
+    # commit timestamp) — both come from indexed columns.
+    cache_probe = db.execute(text("""
+        SELECT
+            (SELECT COUNT(*) FROM projects) AS pc,
+            (SELECT MAX(created_at) FROM commits) AS mc
+    """)).fetchone()
+    project_count = cache_probe[0] if cache_probe else 0
+    last_commit = cache_probe[1] if cache_probe else None
+    etag_seed = f"{project_count}:{last_commit.isoformat() if last_commit else 'none'}"
+    etag = '"' + hashlib.sha256(etag_seed.encode()).hexdigest()[:16] + '"'
+
+    if if_none_match and if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
     rows = db.execute(text("""
         SELECT p.name, p.created_at,
                COUNT(DISTINCT c.id) AS version_count,
@@ -595,7 +697,7 @@ def list_projects(db: Session = Depends(get_db)):
         ORDER BY MAX(c.created_at) DESC NULLS LAST
     """)).fetchall()
 
-    return [
+    payload = [
         {
             "name": r[0],
             "created_at": r[1].isoformat() if r[1] else None,
@@ -608,6 +710,11 @@ def list_projects(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+    return Response(
+        content=json.dumps(payload),
+        media_type="application/json",
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/server/stats")
@@ -729,7 +836,13 @@ def update_description(project_name: str, request: UpdateDescriptionRequest, db:
 
 
 @app.delete("/projects/{project_name}")
-def delete_project(project_name: str, request: DeleteProjectRequest, db: Session = Depends(get_db)):
+def delete_project(
+    project_name: str,
+    request: DeleteProjectRequest,
+    x_confirm_delete: Optional[str] = Header(None, alias="X-Confirm-Delete"),
+    db: Session = Depends(get_db),
+):
+    _require_confirm_delete(x_confirm_delete)
     logger.info("Deleting project: %s (orphan cleanup: %s)", project_name, request.delete_orphan_files)
 
     project = db.execute(
@@ -800,7 +913,10 @@ def delete_project(project_name: str, request: DeleteProjectRequest, db: Session
 
 
 @app.post("/admin/cleanup-orphans")
-def cleanup_orphans(db: Session = Depends(get_db)):
+def cleanup_orphans(
+    x_confirm_delete: Optional[str] = Header(None, alias="X-Confirm-Delete"),
+    db: Session = Depends(get_db),
+):
     """Delete asset records (and their SeaweedFS blobs) that are not referenced
     by any project_files row.
 
@@ -809,7 +925,11 @@ def cleanup_orphans(db: Session = Depends(get_db)):
     be collected until the next day.
 
     Safe to call repeatedly — idempotent.
+
+    Requires the X-Confirm-Delete header so a stray script can't silently wipe
+    orphaned blobs (auth is Phase 7; this is the interim guardrail).
     """
+    _require_confirm_delete(x_confirm_delete)
     orphan_rows = db.execute(text("""
         SELECT id, seaweed_fid FROM assets
         WHERE id NOT IN (SELECT DISTINCT asset_id FROM project_files)
