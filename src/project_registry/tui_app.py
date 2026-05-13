@@ -277,8 +277,7 @@ class InitScreen(Screen):
     }
     #init-box {
         width: 62;
-        height: auto;
-        max-height: 90vh;
+        height: 85vh;
         padding: 1 2;
         background: $surface;
         border: solid $accent;
@@ -288,7 +287,7 @@ class InitScreen(Screen):
         margin-top: 1;
     }
     #init-scroll {
-        max-height: 55vh;
+        height: 1fr;
     }
     #init-buttons {
         margin-top: 1;
@@ -317,26 +316,31 @@ class InitScreen(Screen):
                     *[RadioButton(t["name"]) for t in self._templates],
                     id="preset-radio",
                 )
-                with Vertical(id="custom-fields"):
-                    yield Label("Type", classes="field-label")
-                    yield Select(
-                        [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
-                        value="tlc", allow_blank=False, id="type-select",
-                    )
-                    yield Label("Category", classes="field-label")
-                    yield Select(
-                        [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
-                         ("B2B", "b2b"), ("Digital", "digital")],
-                        value="tvc", allow_blank=False, id="category-select",
-                    )
-                    yield Label("Client", classes="field-label")
-                    yield Input(placeholder="Client name (optional)", id="client-input")
-                    yield Label("Director", classes="field-label")
-                    yield Input(placeholder="e.g.  (optional)", id="director-input")
-                    yield Label("Producer", classes="field-label")
-                    yield Input(placeholder="e.g.  (optional)", id="producer-input")
-                    yield Label("Deadline", classes="field-label")
-                    yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input")
+                # Custom fields are flat direct children so the scroll container
+                # can compute their full virtual height (nested Vertical clips them).
+                yield Label("Type", classes="field-label custom-field")
+                yield Select(
+                    [("TLC", "tlc"), ("Client", "client"), ("Personal", "personal")],
+                    value="tlc", allow_blank=False, id="type-select", classes="custom-field",
+                )
+                yield Label("Category", classes="field-label custom-field")
+                yield Select(
+                    [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
+                     ("B2B", "b2b"), ("Digital", "digital")],
+                    value="tvc", allow_blank=False, id="category-select", classes="custom-field",
+                )
+                yield Label("Client", classes="field-label custom-field")
+                yield Input(placeholder="Client name (optional)", id="client-input",
+                            classes="custom-field")
+                yield Label("Director", classes="field-label custom-field")
+                yield Input(placeholder="e.g.  (optional)", id="director-input",
+                            classes="custom-field")
+                yield Label("Producer", classes="field-label custom-field")
+                yield Input(placeholder="e.g.  (optional)", id="producer-input",
+                            classes="custom-field")
+                yield Label("Deadline", classes="field-label custom-field")
+                yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input",
+                            classes="custom-field")
                 yield Label("Project folder", classes="field-label")
                 yield Input(id="dir-input")
                 yield Checkbox("Append _NNN suffix to folder name", id="inc-check")
@@ -360,7 +364,9 @@ class InitScreen(Screen):
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self._preset_index = event.index
-        self.query_one("#custom-fields").display = (event.index == 0)
+        show = (event.index == 0)
+        for w in self.query(".custom-field"):
+            w.display = show
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
@@ -470,7 +476,7 @@ class ProjectRow(Widget):
     }
     ProjectRow.-server-only { color: $text-muted; }
     ProjectRow #row-name { width: 1fr; }
-    ProjectRow Button { margin-left: 1; min-width: 3; height: 1; }
+    ProjectRow Button { margin-left: 1; min-width: 5; }
     ProjectRow #btn-open-folder { min-width: 13; }
     """
 
@@ -1265,14 +1271,13 @@ class EditTemplateModal(ModalScreen):
     EditTemplateModal { align: center middle; }
     #tmpl-edit-box {
         width: 64;
-        height: auto;
-        max-height: 90vh;
+        height: 85vh;
         padding: 1 2;
         background: $surface;
         border: solid $accent;
     }
     #tmpl-edit-box .field-label { color: $text-muted; margin-top: 1; }
-    #tmpl-edit-scroll { max-height: 55vh; }
+    #tmpl-edit-scroll { height: 1fr; }
     #tmpl-edit-buttons { margin-top: 1; height: auto; }
     #tmpl-edit-buttons Button { margin-right: 1; }
     """
@@ -1452,6 +1457,7 @@ class ProjectDetailScreen(Screen):
         self._project = project
         self._data: dict = {}
         self._auto_push = auto_push
+        self._cvx_stats: dict | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1465,6 +1471,16 @@ class ProjectDetailScreen(Screen):
         if self._auto_push:
             self._auto_push = False
             self.set_timer(0.3, self._do_auto_push)
+        # Background: fetch CopalVX server stats for this project
+        cvx_name = self._data.get("copalvx", {}).get("project_name")
+        if cvx_name:
+            threading.Thread(target=self._fetch_cvx_stats, args=(cvx_name,), daemon=True).start()
+
+    def _fetch_cvx_stats(self, cvx_name: str) -> None:
+        stats = copalvx_api.get_project_stats(cvx_name)
+        if stats:
+            self._cvx_stats = stats
+            self.app.call_from_thread(self._build)
 
     def _do_auto_push(self) -> None:
         """Push v1.0 automatically after project init."""
@@ -1558,6 +1574,16 @@ class ProjectDetailScreen(Screen):
             body.mount(row("Project",   cvx.get("project_name", "—")))
             body.mount(row("Last push", cvx.get("last_push_version", "—")))
             body.mount(row("Pushed at", str(cvx.get("last_push", "—"))[:10]))
+            if self._cvx_stats:
+                s  = self._cvx_stats
+                lv = s.get("latest_version") or "—"
+                vc = str(s.get("version_count") or "?")
+                sz = _fmt_size(s.get("total_storage_bytes"))
+                body.mount(row("Server ver", lv))
+                body.mount(row("Versions",   vc))
+                body.mount(row("Storage",    sz))
+            else:
+                body.mount(Static("  [dim]fetching server stats…[/dim]"))
 
         # ── Notes ─────────────────────────────────────────────────────────────
         if d["notes"]:
@@ -1842,6 +1868,7 @@ class PMApp(App):
     }
     #detail-body {
         height: 1fr;
+        padding-top: 1;
     }
     .section-title {
         color: $accent;

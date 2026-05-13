@@ -37,6 +37,22 @@ def list_projects() -> list[dict]:
         return []
 
 
+def get_project_stats(project_name: str) -> dict | None:
+    """Returns the server entry for a project (name, version_count, total_storage_bytes, etc.).
+
+    Calls GET /projects (the list endpoint) and finds the matching entry.
+    Returns None on any error or if the project is not found.
+    """
+    try:
+        projects = list_projects()
+        for p in projects:
+            if p.get("name") == project_name:
+                return p
+        return None
+    except Exception:
+        return None
+
+
 def get_versions(project_name: str) -> list[str]:
     """Returns version list (newest first), or [] on any error."""
     try:
