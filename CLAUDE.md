@@ -2,7 +2,7 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-12 (after Phase C: smart per-file conflict resolution).
+> Last updated: 2026-05-13 (after pm-tui UI fixes).
 
 ---
 
@@ -280,6 +280,7 @@ Do not change replication to `001` without adding a second volume server.
 | Phase I | Version diff endpoint: `GET /projects/{name}/diff/{v1}/{v2}` (FULL OUTER JOIN, no SeaweedFS reads); `api.get_diff()`; `_show_diff()` TUI helper; `[D]iff` in `[F]iles` browser inner loop. | server/app/main.py, client/copal_core/api.py, client/tui.py |
 | Phase J | Selective pull: `_changed_folders()` + `_matches_prefix()` helpers; `do_pull()` shows numbered folder list from diff, filters manifest; `pull_cli()` + `--prefix` flag; `SelectivePullModal` in pm-tui with checkboxes; `get_diff()` + `extract_changed_folders()` + updated `run_pull()` in copalvx_api.py; state save skipped on partial pull. | client/tui.py, ProjectRegistry copalvx_api.py, tui_app.py |
 | Phase C | Smart per-file conflict resolution: `generate_plan(last_manifest_hashes=None)` in SyncEngine; untouched files auto-overwrite, edited files auto-backup; `do_pull()` fetches last manifest + shows smart-mode notice; `pull_cli()` applies smart mode silently; falls back to global policy when no state available. | client/copal_core/sync.py, client/tui.py |
+| pm-tui UI fixes | (1) `#detail-body { padding-top: 1 }` — content no longer flush against Header. (2) `ProjectRow Button` — removed `height: 1` (clipped borders invisible); `min-width: 3→5`. (3) `InitScreen`/`EditTemplateModal` scrolling — outer box `height: 85vh` (was `auto`), scroll area `height: 1fr` (was `max-height: 55vh`), and removed `Vertical(id="custom-fields")` wrapper (flat direct children with `.custom-field` class for show/hide toggling). (4) CopalVX storage stats in `ProjectDetailScreen` — `get_project_stats()` in `copalvx_api.py` + `_cvx_stats` field + `_fetch_cvx_stats()` background thread + Server ver/Versions/Storage rows in `_build()`. | ProjectRegistry tui_app.py, copalvx_api.py |
 
 ---
 
@@ -723,6 +724,8 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 
 13. **`DELETE /projects/{name}` must delete the project row before orphan assets.** `project_files.asset_id` is a FK to `assets`. Trying to `DELETE FROM assets` while `project_files` still references them causes a FK violation (500). Delete the project first — the `ON DELETE CASCADE` chain clears commits → project_files — then delete orphan assets safely.
 
-14. **Scrollable centered forms: put `ScrollableContainer` inside the styled box, not outside.** The pattern `ScrollableContainer(Vertical(id="box"))` collapses the inner `Vertical` to zero height. The correct pattern: `Vertical(id="box")` as the direct child of the Screen (centered via `align: center middle`), with a flat `ScrollableContainer(id="scroll", max-height: 55vh)` inside it containing the form fields. Buttons go below the scroll container, outside it. The outer box stays `height: auto` and only grows to fit title + scroll area + buttons.
+14. **Scrollable centered forms: fixed outer height + `height: 1fr` inner scroll.** The pattern `ScrollableContainer(Vertical(id="box"))` collapses the inner `Vertical` to zero. The correct pattern: `Vertical(id="box")` as the direct child of the Screen (centered via `align: center middle`) with **`height: 85vh`** (fixed — `height: auto` breaks `vh`/`1fr` resolution in children); a flat `ScrollableContainer(id="scroll")` inside with **`height: 1fr`** fills the remaining space after title/buttons. All form fields must be **flat direct children** of the `ScrollableContainer` — a nested `Vertical` clips its content to the visible area and breaks virtual-height computation (see #16). Buttons outside the scroll container, below it.
 
 15. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** `DashboardScreen` is the root screen and never gets popped, so holding a reference to `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
+
+16. **Never nest a `Vertical` inside a `ScrollableContainer` to group toggle-able fields.** A `Vertical` inside a `ScrollableContainer` receives a bounded height from the scroll context, so its children get clipped to the visible area — you can see the first screenful but cannot scroll into the rest. Fix: put all fields as flat direct children of the `ScrollableContainer` and use a CSS class (e.g. `.custom-field`) to group widgets for bulk `display` toggling: `for w in self.query(".custom-field"): w.display = show`. The `ScrollableContainer` then computes the correct virtual height across all children and scrolling works.
