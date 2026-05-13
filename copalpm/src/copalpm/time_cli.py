@@ -23,6 +23,18 @@ import yaml
 from copalpm.config import DATA_DIR, SESSIONS_LOG, REGISTRY
 
 
+class ServiceDownError(RuntimeError):
+    """Raised by _api() when the task-tracker HTTP service is unreachable."""
+
+
+class ApiError(RuntimeError):
+    """Raised by _api() when the service returns a non-2xx response."""
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 # ── Service client ─────────────────────────────────────────────────────────────
 
 def _load_cfg() -> dict:
@@ -34,7 +46,11 @@ def _load_cfg() -> dict:
 
 
 def _api(method: str, endpoint: str, body: dict | None = None) -> dict:
-    """Make an authenticated request to the task-tracker service."""
+    """Make an authenticated request to the task-tracker service.
+
+    Raises ServiceDownError if the daemon is unreachable, ApiError on non-2xx.
+    Top-level CLI handlers translate these into user-facing exits.
+    """
     cfg  = _load_cfg()
     port = cfg.get("port", 5123)
     url  = f"http://127.0.0.1:{port}{endpoint}"
@@ -58,13 +74,27 @@ def _api(method: str, endpoint: str, body: dict | None = None) -> dict:
             msg = err.get("error") or err.get("hint") or body_text
         except Exception:
             msg = body_text
-        print(f"error: {e.code} — {msg}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError:
-        print("error: task-tracker service is not running.", file=sys.stderr)
-        print("tip:   run `copalpm service install` to set it up, or check `copalpm service status`",
-              file=sys.stderr)
-        sys.exit(1)
+        raise ApiError(e.code, msg)
+    except urllib.error.URLError as e:
+        raise ServiceDownError(str(e))
+
+
+def _exit_on_service_error(fn):
+    """Decorator: translate ServiceDownError/ApiError to CLI-friendly exits."""
+    def wrapper(args):
+        try:
+            return fn(args)
+        except ServiceDownError:
+            print("error: task-tracker service is not running.", file=sys.stderr)
+            print("tip:   run `copalpm service install` to set it up, or check `copalpm service status`",
+                  file=sys.stderr)
+            sys.exit(1)
+        except ApiError as e:
+            print(f"error: {e.code} — {e.message}", file=sys.stderr)
+            sys.exit(1)
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
 
 
 # ── Registry helpers ──────────────────────────────────────────────────────────
@@ -83,16 +113,34 @@ def _project_name(pid: str) -> str:
 
 # ── Project detection ──────────────────────────────────────────────────────────
 
-def find_project_id_from_cwd() -> str | None:
-    """Walk up from CWD looking for project.yaml. Return its id, or None."""
-    current = Path.cwd().resolve()
-    for directory in [current, *current.parents]:
+def _find_project_id_from(start: Path) -> str | None:
+    """Walk up from `start` looking for project.yaml. Return its id, or None."""
+    start = start.resolve()
+    for directory in [start, *start.parents]:
         candidate = directory / "project.yaml"
         if candidate.exists():
             with candidate.open(encoding="utf-8") as f:
                 record = yaml.safe_load(f)
             return record.get("id")
     return None
+
+
+def _find_phase_from(start: Path) -> str | None:
+    """Walk up from `start` looking for project.yaml; return the latest phase."""
+    start = start.resolve()
+    for directory in [start, *start.parents]:
+        candidate = directory / "project.yaml"
+        if candidate.exists():
+            with candidate.open(encoding="utf-8") as f:
+                record = yaml.safe_load(f)
+            log = record.get("phase_log") or []
+            return log[-1]["phase"] if log else None
+    return None
+
+
+def find_project_id_from_cwd() -> str | None:
+    """Walk up from CWD looking for project.yaml. Return its id, or None."""
+    return _find_project_id_from(Path.cwd())
 
 
 def resolve_project_id(args) -> str:
@@ -109,15 +157,7 @@ def resolve_project_id(args) -> str:
 
 def current_phase_from_cwd() -> str | None:
     """Read current phase from project.yaml in CWD walk."""
-    current = Path.cwd().resolve()
-    for directory in [current, *current.parents]:
-        candidate = directory / "project.yaml"
-        if candidate.exists():
-            with candidate.open(encoding="utf-8") as f:
-                record = yaml.safe_load(f)
-            log = record.get("phase_log") or []
-            return log[-1]["phase"] if log else None
-    return None
+    return _find_phase_from(Path.cwd())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -140,6 +180,7 @@ def elapsed_seconds(start_iso: str) -> int:
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
+@_exit_on_service_error
 def cmd_start(args):
     pid   = resolve_project_id(args)
     phase = args.phase or current_phase_from_cwd()
@@ -158,6 +199,7 @@ def cmd_start(args):
     print(f"▶  {pid}{desc_str}{tool_str}{phase_str}")
 
 
+@_exit_on_service_error
 def cmd_stop(args):
     resp = _api("POST", "/stop", {"reason": "manual"})
     if resp.get("stopped"):
@@ -172,7 +214,8 @@ def cmd_stop(args):
 def cmd_status(args):
     try:
         state = _api("GET", "/state")
-    except SystemExit:
+    except (ServiceDownError, ApiError):
+        print("  Status unavailable (service not running).")
         return
 
     if not state:

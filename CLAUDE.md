@@ -2,7 +2,7 @@
 
 > Read this first for orientation across the monorepo.
 > Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md) and [copalpm/CLAUDE.md](./copalpm/CLAUDE.md).
-> Last updated: 2026-05-13 (after Phase 4 monorepo restructure).
+> Last updated: 2026-05-14 (Phase 6 closed — F4 OS triggers shipped).
 
 ---
 
@@ -95,7 +95,7 @@ For working directory-specific config:
 |-------|--------|
 | Phases 0–4 (rebrand + monorepo + audit + restructure) | ✅ Complete |
 | Phase 5 (public launch readiness — CI, real PyPI releases, archive old repos) | ⏳ Pending |
-| Phase 6 (feature work: folder picker, pull-dest memory, push/pull activity log, server hardening) | ✅ Complete (F4 OS triggers still open) |
+| Phase 6 (feature work: folder picker, pull-dest memory, push/pull activity log, server hardening, OS triggers) | ✅ Complete |
 | Phase 7 (auth on CopalVX server) | ⏳ Deferred, LAN-only system |
 | Figma UI redesign for CopalPM | ⏳ User-driven, separate |
 
@@ -116,9 +116,16 @@ server-deployment overhaul. Shipped:
 - Also bundled: CopalPM TUI perf fix (active-session HTTP polling moved off
   the render thread); user-data dir migration `project-registry/` → `copalpm/`;
   Windows utf-8 stdout fix for copalvx.
-
-Still open under Phase 6: **F4 — OS-level triggers** (Windows Explorer
-right-click menus, macOS Quick Actions for start/stop timer + new project).
+- **F4 — OS-level triggers (2026-05-14)** — `copalpm shell-integration
+  install` adds three right-click verbs on Windows Explorer (HKCU registry,
+  no admin) and macOS Finder (Automator Quick Actions). Verbs: Start Timer,
+  Stop Timer, New Project Here. "New Project Here" deep-links into the TUI's
+  InitScreen with the folder pre-filled via a new `copalpm tui --screen init
+  --dir PATH` flag. Notifications via WinRT toast on Windows, `osascript` on
+  macOS. The `time_cli._api()` client was refactored to raise
+  `ServiceDownError` / `ApiError` so the verb handlers can surface "service
+  not running" as a toast instead of a hard exit. See
+  [copalpm/CLAUDE.md](./copalpm/CLAUDE.md) "Shell integration" for details.
 
 Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
 - Archive old standalone repos

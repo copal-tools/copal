@@ -81,6 +81,10 @@ copalpm service install            # install task-tracker background service
 copalpm service uninstall          # remove the service
 copalpm service status             # service state
 
+copalpm shell-integration install   # add Copal verbs to right-click menus
+copalpm shell-integration uninstall # remove the OS shell verbs
+copalpm shell-integration status    # show installed verbs
+
 copalpm deliver <path> [...]       # log a delivered asset
 ```
 
@@ -97,6 +101,33 @@ copalpm service install      # install + start
 copalpm service uninstall    # stop + remove
 copalpm service status       # is the service running?
 ```
+
+---
+
+## Explorer / Finder integration (optional)
+
+Add three right-click verbs to your file manager so you can start a timer,
+stop a timer, or start a new project without leaving the OS shell:
+
+```bash
+copalpm shell-integration install     # add the verbs
+copalpm shell-integration status      # show what's installed
+copalpm shell-integration uninstall   # remove them
+```
+
+The verbs work on any folder:
+
+- **Copal: Start Timer** — starts a time session against the project whose
+  `project.yaml` lives at or above the selected folder. Toast notification on
+  success; if the background service isn't running, you'll see an error
+  pointing at `copalpm service install`.
+- **Copal: Stop Timer** — stops the current session.
+- **Copal: New Project Here** — opens the CopalPM TUI directly on its
+  New Project screen with the folder pre-filled.
+
+Per-user install — no admin / sudo required. On Windows the entries live
+in HKCU and may not appear until Explorer is restarted. On macOS the
+entries appear under the Services menu (or right-click → Quick Actions).
 
 ---
 
