@@ -27,6 +27,7 @@ from textual.widgets import (
     ProgressBar, RadioButton, RadioSet, RichLog, Rule, Select, Static,
 )
 from textual.widget import Widget
+from textual_fspicker import SelectDirectory
 
 from copalpm.config import DATA_DIR
 from copalpm import copalvx_api
@@ -296,6 +297,17 @@ class InitScreen(Screen):
     #init-buttons Button {
         margin-right: 1;
     }
+    #dir-row {
+        height: auto;
+    }
+    #dir-row #dir-input {
+        width: 1fr;
+    }
+    #dir-row #dir-browse {
+        min-width: 5;
+        width: 5;
+        margin-left: 1;
+    }
     """
 
     def __init__(self) -> None:
@@ -342,7 +354,9 @@ class InitScreen(Screen):
                 yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input",
                             classes="custom-field")
                 yield Label("Project folder", classes="field-label")
-                yield Input(id="dir-input")
+                with Horizontal(id="dir-row"):
+                    yield Input(id="dir-input")
+                    yield Button("📁", id="dir-browse")
                 yield Checkbox("Append _NNN suffix to folder name", id="inc-check")
             with Horizontal(id="init-buttons"):
                 yield Button("Create", variant="primary", id="btn-create")
@@ -373,6 +387,22 @@ class InitScreen(Screen):
             self.app.pop_screen()
         elif event.button.id == "btn-create":
             self._do_create()
+        elif event.button.id == "dir-browse":
+            self._open_dir_picker()
+
+    def _open_dir_picker(self) -> None:
+        current = self.query_one("#dir-input", Input).value.strip() or self._default_dir()
+        start = Path(current).expanduser()
+        while not start.exists() and start != start.parent:
+            start = start.parent
+        if not start.exists():
+            start = Path.home()
+
+        def on_pick(path: Path | None) -> None:
+            if path is not None:
+                self.query_one("#dir-input", Input).value = str(path)
+
+        self.app.push_screen(SelectDirectory(str(start)), on_pick)
 
     def _do_create(self) -> None:
         name = self.query_one("#name-input", Input).value.strip()

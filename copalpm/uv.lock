@@ -40,6 +40,7 @@ dependencies = [
     { name = "flask" },
     { name = "pyyaml" },
     { name = "textual" },
+    { name = "textual-fspicker" },
     { name = "waitress" },
 ]
 
@@ -52,7 +53,8 @@ dev = [
 requires-dist = [
     { name = "flask", specifier = ">=3.1.2" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "textual", specifier = ">=0.59" },
+    { name = "textual", specifier = ">=1.0" },
+    { name = "textual-fspicker", specifier = ">=1.0" },
     { name = "waitress", specifier = ">=3.0.2" },
 ]
 
@@ -320,6 +322,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/62/1e/1eedc5bac184d00aaa5f9a99095f7e266af3ec46fa926c1051be5d358da1/textual-8.2.5.tar.gz", hash = "sha256:6c894e65a879dadb4f6cf46ddcfedb0173ff7e0cb1fe605ff7b357a597bdbc90", size = 1851596, upload-time = "2026-04-30T08:02:58.956Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cd/01/c4555f9c8a692ff83d84930150540f743ce94c89234f9e9a15ff4baba3a8/textual-8.2.5-py3-none-any.whl", hash = "sha256:247d2aa2faf222749c321f88a736247f37ee2c023604079c7490bfacddfcd4b2", size = 727050, upload-time = "2026-04-30T08:03:01.421Z" },
+]
+
+[[package]]
+name = "textual-fspicker"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "textual" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e8/fd/dc3160123af550838d50a4fa7f62e357d7ad2fc9b4220ead9160661bcd1b/textual_fspicker-1.0.0.tar.gz", hash = "sha256:462608dbe6a14edff679fc6116addcf288f4a79f8e4fffd240f9ce2caaf9e655", size = 16517, upload-time = "2026-02-18T20:02:16.547Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/2f/bf13ae8a1f17186a122968c7ba0f18716d63d2fa67a9e6f905a20067c022/textual_fspicker-1.0.0-py3-none-any.whl", hash = "sha256:71c80258f8885a67abf85d68b42ac8defc8226281481717af722346cbc3e0305", size = 24932, upload-time = "2026-02-18T20:02:15.492Z" },
 ]
 
 [[package]]
