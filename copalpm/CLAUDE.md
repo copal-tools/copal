@@ -158,6 +158,10 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
 8. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** DashboardScreen is the root screen and never gets popped, so holding `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
 
+9. **HTTP calls must never run on the 1s tick of `_tick_timer`.** Both `DashboardScreen` and `ProjectDetailScreen` previously called `_active_session()` (an HTTP GET to the task-tracker daemon, 2s timeout) directly inside `_tick_timer`, which fires every second on the render thread. When the daemon was down — common after the Phase 2 service rename if a user hadn't reinstalled the service — every tick blocked for up to 2 seconds, producing severe scroll lag and periodic stutters. Pattern in place now: a daemon thread polls every 5s and writes to `self._session_cache`; `_tick_timer` just reads the cache and formats the title. Any future "watch this remote thing" code must follow the same shape.
+
+10. **The `📁` folder picker on InitScreen requires `textual-fspicker`.** Adding new path inputs anywhere in the TUI? Use the same pattern — `Horizontal(Input, Button("📁"))` with a button handler that calls `self.app.push_screen(SelectDirectory(<start>), <callback>)`. The picker's starting location walks up the filesystem to the nearest existing path; absent that, it falls back to `Path.home()`. See `InitScreen._open_dir_picker` for the canonical implementation.
+
 ---
 
 ## Design principles

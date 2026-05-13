@@ -594,6 +594,91 @@ Falls back gracefully to the global `conflict_policy` if:
 
 ---
 
+### F3 — Pull destination remembering (COMPLETE, 2026-05-13)
+
+The client now treats a pull's target directory as optional on repeat
+pulls. New `registry.lookup_path(name)` in `client/copal_core/registry.py`
+consults `~/.copal/projects.json` (which `register_project` already
+populates on every successful push/pull). Two surfaces:
+
+- **Interactive TUI** ([client/tui.py:672](./client/tui.py)) — if the
+  project is in the registry, skip the destination prompt and use the
+  remembered path with a "(remembered)" annotation. First-time pulls still
+  prompt with the existing `cwd/project` default.
+- **CLI** ([client/tui.py:892, :1071](./client/tui.py)) — `pull` positional
+  `target` is now `nargs="?"`. If omitted and the project is in the registry,
+  the remembered path is used; otherwise the CLI fails with a clear
+  "pass an explicit target on first pull" message.
+
+**Tests:** `test_registry.py` (5 tests) — missing registry, unknown project,
+known project, multi-entry-same-name (prefers most-recent), register-then-lookup
+roundtrip.
+
+---
+
+### F1 — Push/pull activity log (COMPLETE, 2026-05-13)
+
+Server-side audit table + endpoint, client identity headers, project-detail
+surfaces in both TUIs.
+
+**Server:**
+- New `events` table (id, project_id, kind ['push'|'pull'], version_tag,
+  user_name, client_host, created_at) in [server/app/init_db.py](./server/app/init_db.py)
+  with `(project_id, created_at DESC)` index.
+- `/commit` and `/checkout` now require an `X-Copal-Host` header (and
+  `X-Copal-User` on `/checkout`). Both endpoints insert an event row
+  alongside their main operation; pull-side insert is best-effort and
+  failures don't break the pull.
+- New `GET /projects/{name}/events?limit=N` returns recent activity
+  newest first (default 50, capped at 500).
+
+**Client (CopalVX):**
+- [`copal_core/api.py`](./client/copal_core/api.py) — `_identity_headers()`
+  sources user from `SETTINGS["default_author"]` and host from
+  `socket.gethostname()`. `commit()` and `get_manifest()` send these on
+  every call. New `get_events(name, limit)` wraps the new endpoint.
+- [`tui.py`](./client/tui.py) project-detail view shows a "Recent Activity"
+  section (last 10 events) with colour-coded PUSH/PULL kind, version,
+  and `user@host`.
+
+**Client (CopalPM):**
+- [`copalvx_api.py`](../copalpm/src/copalpm/copalvx_api.py) — new
+  `get_events(name, limit)` hitting the endpoint via urllib.
+- ProjectDetailScreen background-thread fetches events alongside server
+  stats. Two new compact rows ("Recent push" / "Recent pull") surface
+  the most recent of each in the COPALVX section.
+
+**Tests:** `test_api_identity.py` (6 tests) — header construction, header
+attachment on commit + get_manifest, "unknown" fallback when config /
+hostname are missing, `get_events` 404 → `[]` and parse passthrough.
+
+**Breaking note:** old clients receive 422 on `/commit` and `/checkout`
+until upgraded. Single-tenant LAN system — required header upgrades are
+coordinated, not gradual.
+
+---
+
+### Ops hardening (COMPLETE, 2026-05-13)
+
+Triggered by a filer-leveldb wipe during the F1 server deploy:
+
+- **`/data/filerldb2` is now a mounted volume**
+  ([server/docker-compose.yml](./server/docker-compose.yml)). Previously the
+  filer's path → fid mapping lived in the container's writable layer; a
+  routine container recreation wiped it, leaving the blob bytes on disk
+  unaddressable.
+- **[`server/DEPLOY.md`](./server/DEPLOY.md)** — full deployment runbook
+  with deploy classes (routine / schema / breaking-protocol / clean-slate),
+  storage contract, verification steps, rollback, and lessons-learned
+  section that captures the filer wipe, the wrong-repo deploy, and the
+  Windows utf-8 piping crash so they don't repeat.
+- **`copalvx` CLI utf-8 stdout** — `main()` now calls
+  `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`. Pulls used
+  to crash on Windows when stdout was piped because the ✅ / ❌ progress
+  emoji can't encode in cp1252.
+
+---
+
 ### Phase 7 — Authentication (LOW PRIORITY)
 
 LAN-only system, not urgent. When needed:

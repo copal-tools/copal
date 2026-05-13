@@ -95,8 +95,30 @@ For working directory-specific config:
 |-------|--------|
 | Phases 0–4 (rebrand + monorepo + audit + restructure) | ✅ Complete |
 | Phase 5 (public launch readiness — CI, real PyPI releases, archive old repos) | ⏳ Pending |
+| Phase 6 (feature work: folder picker, pull-dest memory, push/pull activity log, server hardening) | ✅ Complete (F4 OS triggers still open) |
 | Phase 7 (auth on CopalVX server) | ⏳ Deferred, LAN-only system |
 | Figma UI redesign for CopalPM | ⏳ User-driven, separate |
+
+**Phase 6 — feature work (2026-05-13).** Four CopalVX/CopalPM features and a
+server-deployment overhaul. Shipped:
+- **F2 — Folder picker in CopalPM's New Project screen** (textual-fspicker).
+- **F3 — Pull destination remembering** — the CopalVX client now skips the
+  destination prompt for previously-pulled projects and remembers per-project
+  paths in `~/.copal/projects.json`.
+- **F1 — Push/pull activity log** — new `events` table on the server, identity
+  headers (`X-Copal-User`, `X-Copal-Host`) on every push/pull, "Recent Activity"
+  section in CopalVX TUI, "Recent push / Recent pull" rows in CopalPM TUI.
+- **Server hardening** — the SeaweedFS filer leveldb is now on a persistent
+  mount (lost once on 2026-05-13 during the wrong-repo deploy). New
+  [`copalvx/server/DEPLOY.md`](./copalvx/server/DEPLOY.md) runbook covers
+  routine / schema / breaking-protocol / clean-slate deploys with the
+  storage contract and lessons learned.
+- Also bundled: CopalPM TUI perf fix (active-session HTTP polling moved off
+  the render thread); user-data dir migration `project-registry/` → `copalpm/`;
+  Windows utf-8 stdout fix for copalvx.
+
+Still open under Phase 6: **F4 — OS-level triggers** (Windows Explorer
+right-click menus, macOS Quick Actions for start/stop timer + new project).
 
 Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
 - Archive old standalone repos
