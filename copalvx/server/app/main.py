@@ -70,51 +70,28 @@ MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_MB", "50")) * 1024 * 10
 
 @app.middleware("http")
 async def limit_request_body(request: Request, call_next):
-    """Reject oversized payloads.
+    """Reject oversized payloads based on the Content-Length header.
 
-    Belt-and-braces: trust the Content-Length header for fast-path rejection,
-    *and* stream the body through a counter so a client that lies about its
-    Content-Length still gets cut off at the limit.
+    A streaming-body counter that wrapped ``request._receive`` to catch
+    forged Content-Length headers was attempted earlier, but Starlette's
+    ``BaseHTTPMiddleware`` doesn't reliably propagate the override into
+    ``call_next``'s downstream request — and a stray ``return`` in the
+    ``finally`` block ended up swallowing real endpoint exceptions. For a
+    LAN-only system the Content-Length check is sufficient; revisit if the
+    deployment ever fronts an untrusted network.
     """
-    limit_mb = MAX_REQUEST_BODY_BYTES // (1024 * 1024)
     content_length = request.headers.get("content-length")
     if content_length:
         try:
             if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                limit_mb = MAX_REQUEST_BODY_BYTES // (1024 * 1024)
                 return Response(
                     content=f"Request body exceeds {limit_mb} MB limit.",
                     status_code=413,
                 )
         except ValueError:
             pass
-
-    # Wrap the receive callable to count bytes as they actually arrive. If a
-    # streaming client (no Content-Length, or a forged one) overruns the cap
-    # we synthesize a 413 mid-stream.
-    body_size = 0
-    over_limit = False
-    original_receive = request.receive
-
-    async def limited_receive():
-        nonlocal body_size, over_limit
-        message = await original_receive()
-        if message.get("type") == "http.request":
-            chunk = message.get("body", b"")
-            body_size += len(chunk)
-            if body_size > MAX_REQUEST_BODY_BYTES:
-                over_limit = True
-        return message
-
-    request._receive = limited_receive  # type: ignore[attr-defined]
-    try:
-        response = await call_next(request)
-    finally:
-        if over_limit:
-            return Response(
-                content=f"Request body exceeds {limit_mb} MB limit.",
-                status_code=413,
-            )
-    return response
+    return await call_next(request)
 
 
 # ── Identity / delete-confirmation header helpers ──────────────────────────────
