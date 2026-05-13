@@ -3,6 +3,8 @@ name = "asset-client"
 version = "0.1.0"
 description = "Asset management client for CopalVX"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{name = "The Copal Tools Authors"}]
 dependencies = [
     "argparse>=1.4.0",
     "pathspec>=0.12.1",

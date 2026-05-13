@@ -2,7 +2,30 @@
 
 > This file is for AI assistants. It contains everything needed to understand and
 > continue work on CopalVX without reading the full codebase from scratch.
-> Last updated: 2026-05-13 (after pm-tui UI fixes).
+> Last updated: 2026-05-13 (rebrand + monorepo plan).
+
+---
+
+## Rebrand in progress (2026-05-13)
+
+CopalVX + ProjectRegistry are being consolidated into a single open-source monorepo
+under the **Copal Tools** umbrella.
+
+| Item | Value |
+|------|-------|
+| Umbrella | Copal Tools (`github.com/copal-tools/copal`, TBD) |
+| Flagship | **CopalVX** — Version eXchange (this codebase, unchanged in purpose) |
+| Companion | **CopalPM** — formerly ProjectRegistry; includes built-in time tracking (no `TT` brand) |
+| License | Apache 2.0 (both packages) |
+| Repo layout | `copal/copalvx/` + `copal/copalpm/`, shared `LICENSE` + `NOTICE` |
+| Domains | `copalvx.com` (owned) + `copalpm.app` (to acquire) |
+
+**Status:** decisions locked, executing Phase 1 (LICENSE files in both existing repos).
+Full plan + remaining phases: see [MERGE_PLAN.md](MERGE_PLAN.md) at repo root.
+
+The architecture, push/pull flows, API surface, database schema, and gotchas below
+are **unchanged** by the rebrand. Only naming + package layout will shift, and only
+once Phase 2 lands. Continue reading for current system state.
 
 ---
 
