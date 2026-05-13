@@ -20,12 +20,19 @@ under the **Copal Tools** umbrella.
 | Repo layout | `copal/copalvx/` + `copal/copalpm/`, shared `LICENSE` + `NOTICE` |
 | Domains | `copalvx.com` (owned) + `copalpm.app` (to acquire) |
 
-**Status:** decisions locked, executing Phase 1 (LICENSE files in both existing repos).
-Full plan + remaining phases: see [MERGE_PLAN.md](MERGE_PLAN.md) at repo root.
+**Status:** Phase 1 (licensing) + Phase 2 (PM package rename + CLI consolidation) complete.
+Next is Phase 3 (monorepo merge — both repos into `github.com/copal-tools/copal`).
+Full plan: see [MERGE_PLAN.md](MERGE_PLAN.md) at repo root.
 
-The architecture, push/pull flows, API surface, database schema, and gotchas below
-are **unchanged** by the rebrand. Only naming + package layout will shift, and only
-once Phase 2 lands. Continue reading for current system state.
+**Phase 2 summary (landed 2026-05-13):**
+- ProjectRegistry Python package renamed: `project_registry/` → `copalpm/`
+- 6 separate CLI entry points (`pm`, `project`, `tt`, `task-tracker`, `deliver`, `pm-tui`) collapsed into one `copalpm` binary with subcommand groups: `project`, `record`, `time`, `service`, `deliver`, `tui`, and a hidden `task-tracker` daemon entry.
+- `copalpm` with no args launches the TUI (the most common entry point).
+- macOS plist label: `com.projectregistry.task-tracker` → `com.copal-tools.copalpm.task-tracker`. Windows NSSM service: `TaskTracker` → `CopalPMTaskTracker`. Any existing service install must be removed (`pm uninstall-service` from the old install) before `copalpm service install` from the new one.
+- User data directory **stays at `project-registry/`** for now — registry, sessions, time logs are preserved across the rebrand. A migration to `copalpm/` is a separate future step.
+- All 5 subprocess call sites in `client/copal_core/pm_hooks.py` updated to invoke `copalpm <group> <cmd>`.
+
+The architecture, API surface, database schema, and gotchas below remain accurate.
 
 ---
 
@@ -180,7 +187,7 @@ Interactive mode (`do_push()`) and CLI mode (`push_cli`) share the same upload/c
 3. **Generate plan** — `SyncEngine.generate_plan()` compares manifest vs local files; detects moves (same hash different path = LOCAL_COPY, zero bandwidth)
 4. **Execute plan** — parallel downloads from SeaweedFS filer, local copies, backups per policy
 5. **Save state + registry** — same as push
-6. **post-pull hooks** — `pm register <path>` + display CopalVX block from pulled project.yaml
+6. **post-pull hooks** — `copalpm project register <path>` + display CopalVX block from pulled project.yaml
 
 ---
 
@@ -201,9 +208,19 @@ copalvx:
   last_push_version: "v2.1"        # Version tag of last push
 ```
 
-This is written by `project copalvx-update` (a ProjectRegistry CLI command) which is called by `pm_hooks.hook_post_push()` after every successful CopalVX push.
+This is written by `copalpm record copalvx-update` (a CopalPM subcommand) which is called by `pm_hooks.hook_post_push()` after every successful CopalVX push.
 
-**The pm_hooks system is immune to all CopalVX server/API changes** — it only calls external CLIs via subprocess. The hooks are all non-fatal: if `project` or `pm` are not in PATH, a warning prints and CopalVX continues normally.
+**The pm_hooks system is immune to all CopalVX server/API changes** — it only calls external CLIs via subprocess. The hooks are all non-fatal: if `copalpm` is not in PATH, a warning prints and CopalVX continues normally.
+
+**Subprocess calls made by pm_hooks** (post-Phase 2):
+
+| Hook | Command |
+|------|---------|
+| pre-push  | `copalpm record sync-time --file <yaml>` |
+| post-push | `copalpm record copalvx-update --file <yaml> --project-name <n> --version <v>` |
+| post-pull | `copalpm project register <abs_path>` |
+| post-pull | `copalpm record get copalvx.project_name --file <yaml>` |
+| post-pull | `copalpm record get copalvx.last_push --file <yaml>` |
 
 **Three separate "names" to not confuse:**
 1. **ProjectRegistry internal ID** — `PROJ-SLUG-DDMMYY` (auto-generated)
@@ -371,7 +388,7 @@ Rewrote `client/tui.py` as a terminal dashboard:
 - `do_push()` version tag prompt no longer auto-increments: when the project has existing versions, the prompt is blank and the user types the tag manually (latest version shown as context). New projects still default to `v1.0`.
 - Delete 500 fix: `DELETE /projects/{name}` now deletes the project row first (cascades → commits → project_files), then removes orphan assets. Previously tried to delete assets while project_files still held FK references.
 
-**pm-tui (`E:\Development\ProjectRegistry\src\project_registry\tui_app.py`):**
+**pm-tui (`E:\Development\ProjectRegistry\src\copalpm\tui_app.py` — renamed from `src/project_registry/` in Phase 2):**
 
 Key bindings in `ProjectDetailScreen`:
 
@@ -752,3 +769,7 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 15. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** `DashboardScreen` is the root screen and never gets popped, so holding a reference to `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
 
 16. **Never nest a `Vertical` inside a `ScrollableContainer` to group toggle-able fields.** A `Vertical` inside a `ScrollableContainer` receives a bounded height from the scroll context, so its children get clipped to the visible area — you can see the first screenful but cannot scroll into the rest. Fix: put all fields as flat direct children of the `ScrollableContainer` and use a CSS class (e.g. `.custom-field`) to group widgets for bulk `display` toggling: `for w in self.query(".custom-field"): w.display = show`. The `ScrollableContainer` then computes the correct virtual height across all children and scrolling works.
+
+17. **Phase 2 rename — old commands are gone.** After the Phase 2 rebrand, the 6 standalone executables (`pm`, `project`, `tt`, `task-tracker`, `deliver`, `pm-tui`) no longer exist. All functionality is now under the single `copalpm` binary with subcommand groups (`copalpm project ...`, `copalpm record ...`, `copalpm time ...`, `copalpm service ...`, `copalpm deliver`, `copalpm tui`, and the hidden `copalpm task-tracker` daemon). The Python package was renamed `project_registry/` → `copalpm/` accordingly. Imports inside any tooling that hot-reaches into the package must use `from copalpm.X` not `from project_registry.X`. The user data directory remains `~/.config/project-registry/` (Mac/Linux) / `%APPDATA%\project-registry\` (Windows) — a separate migration is planned but not yet done.
+
+18. **Daemon spec changed in Phase 2.** Before the rebrand, the time-tracking daemon was a standalone `task-tracker(.exe)` binary, and `pm install-service` registered that binary directly. After the rebrand the daemon is a hidden subcommand `copalpm task-tracker`, and `copalpm service install` registers the `copalpm` binary with `task-tracker` as the first argument (macOS plist `ProgramArguments` is a 2-element array; NSSM install passes `task-tracker` as the service args). Anyone migrating from a pre-rebrand install must run `pm uninstall-service` on the old install before doing `copalpm service install` on the new one — the old plist label (`com.projectregistry.task-tracker`) and NSSM service name (`TaskTracker`) won't be touched by the new commands and will keep trying to invoke a binary that no longer exists.
