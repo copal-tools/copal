@@ -250,8 +250,8 @@ class TestBodySizeLimit:
 # ---------------------------------------------------------------------------
 
 class TestVersionDiff:
-    V1 = "vd1.0"
-    V2 = "vd2.0"
+    V1 = "v1.0"
+    V2 = "v2.0"
 
     @pytest.fixture(scope="class", autouse=True)
     def _commits(self, project):
