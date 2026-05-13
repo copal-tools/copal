@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Project and time tracking CLI for motion design and VFX work"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "The Copal Tools Authors"}]
 dependencies = [
     "flask>=3.1.2",
     "waitress>=3.0.2",
