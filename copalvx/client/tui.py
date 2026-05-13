@@ -288,6 +288,28 @@ def show_project(name):
         except Exception as e:
             print(f"  {red('Could not load versions:')} {e}")
 
+        # Recent activity (push/pull log) — best effort; absent on older servers
+        try:
+            events = api.get_events(name, limit=10)
+        except Exception:
+            events = []
+
+        if events:
+            print()
+            _rule()
+            print(f"  Recent Activity")
+            _rule()
+            for ev in events:
+                kind     = ev.get("kind", "?")
+                tag      = ev.get("version_tag", "?")
+                user     = ev.get("user", "?")
+                host     = ev.get("host", "?")
+                when     = fmt_date(ev.get("created_at", ""), short=True)
+                colour   = green if kind == "push" else cyan
+                kind_pad = kind.upper().ljust(5)
+                print(f"  {when:<19}  {colour(kind_pad)}  {tag:<10}  {dim(f'{user}@{host}')}")
+            _rule()
+
         print()
         print(
             f"  {cyan('[P]')}ush  "

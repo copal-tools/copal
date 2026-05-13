@@ -1,8 +1,22 @@
+import socket
 import requests
 from requests.exceptions import ConnectionError, Timeout
-from .config import ENDPOINTS, API_BASE
+from .config import ENDPOINTS, API_BASE, SETTINGS
 
 API_TIMEOUT = (10, 30)
+
+
+def _identity_headers() -> dict:
+    """Headers identifying the caller for the server-side activity log.
+
+    User is taken from the configured default_author (which falls back to
+    getpass.getuser()); host is socket.gethostname(). Re-evaluated on every
+    call so config edits take effect without a client restart.
+    """
+    return {
+        "X-Copal-User": SETTINGS.get("default_author", "unknown"),
+        "X-Copal-Host": socket.gethostname() or "unknown",
+    }
 
 def handshake(project_name, local_assets):
     """Asks server which files are missing."""
@@ -59,17 +73,33 @@ def commit(project, tag, message, author, files):
         "author": author,
         "files": [{"path": f["path"], "hash": f["hash"], "size": f["size"]} for f in files]
     }
-    resp = requests.post(ENDPOINTS["commit"], json=payload, timeout=API_TIMEOUT)
+    resp = requests.post(
+        ENDPOINTS["commit"], json=payload,
+        headers=_identity_headers(), timeout=API_TIMEOUT,
+    )
     resp.raise_for_status()
 
 def get_manifest(project, tag):
-    """Fetches file list for a specific version."""
+    """Fetches file list for a specific version. Records a pull event server-side."""
     url = f"{ENDPOINTS['checkout']}/{project}/{tag}"
-    resp = requests.get(url, timeout=API_TIMEOUT)
+    resp = requests.get(url, headers=_identity_headers(), timeout=API_TIMEOUT)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
     return resp.json()
+
+
+def get_events(project_name, limit=50):
+    """Returns recent push/pull events for a project (newest first), or [] on error."""
+    url = f"{API_BASE}/projects/{project_name}/events"
+    try:
+        resp = requests.get(url, params={"limit": limit}, timeout=API_TIMEOUT)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return resp.json()
+    except (ConnectionError, Timeout):
+        return []
 
 def ensure_project(name, description=""):
     """Creates the project if it doesn't exist. 409 = already exists = success."""

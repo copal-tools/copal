@@ -1499,6 +1499,7 @@ class ProjectDetailScreen(Screen):
         self._data: dict = {}
         self._auto_push = auto_push
         self._cvx_stats: dict | None = None
+        self._cvx_events: list[dict] | None = None
         self._session_cache: dict | None = None
         self._stop_session_poller = threading.Event()
 
@@ -1514,10 +1515,11 @@ class ProjectDetailScreen(Screen):
         if self._auto_push:
             self._auto_push = False
             self.set_timer(0.3, self._do_auto_push)
-        # Background: fetch CopalVX server stats for this project
+        # Background: fetch CopalVX server stats + activity log for this project
         cvx_name = self._data.get("copalvx", {}).get("project_name")
         if cvx_name:
             threading.Thread(target=self._fetch_cvx_stats, args=(cvx_name,), daemon=True).start()
+            threading.Thread(target=self._fetch_cvx_events, args=(cvx_name,), daemon=True).start()
         threading.Thread(target=self._session_poll_loop, daemon=True).start()
 
     def on_unmount(self) -> None:
@@ -1533,6 +1535,11 @@ class ProjectDetailScreen(Screen):
         if stats:
             self._cvx_stats = stats
             self.app.call_from_thread(self._build)
+
+    def _fetch_cvx_events(self, cvx_name: str) -> None:
+        events = copalvx_api.get_events(cvx_name, limit=20)
+        self._cvx_events = events
+        self.app.call_from_thread(self._build)
 
     def _do_auto_push(self) -> None:
         """Push v1.0 automatically after project init."""
@@ -1636,6 +1643,25 @@ class ProjectDetailScreen(Screen):
                 body.mount(row("Storage",    sz))
             else:
                 body.mount(Static("  [dim]fetching server stats…[/dim]"))
+
+            # Activity log (server-recorded push/pull events)
+            if self._cvx_events is not None:
+                last_push = next((e for e in self._cvx_events if e.get("kind") == "push"), None)
+                last_pull = next((e for e in self._cvx_events if e.get("kind") == "pull"), None)
+                if last_push:
+                    rel = days_ago(last_push.get("created_at", ""))
+                    body.mount(row(
+                        "Recent push",
+                        f"{last_push.get('version_tag','?')}  "
+                        f"[dim]by {last_push.get('user','?')}  {rel}[/dim]",
+                    ))
+                if last_pull:
+                    rel = days_ago(last_pull.get("created_at", ""))
+                    body.mount(row(
+                        "Recent pull",
+                        f"{last_pull.get('version_tag','?')}  "
+                        f"[dim]by {last_pull.get('user','?')}@{last_pull.get('host','?')}  {rel}[/dim]",
+                    ))
 
         # ── Notes ─────────────────────────────────────────────────────────────
         if d["notes"]:

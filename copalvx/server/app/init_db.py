@@ -8,6 +8,7 @@ DEFAULT_URL = "postgresql://admin:CHANGE_ME_IN_DOT_ENV@192.168.1.100:5432/asset_
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_URL)
 
 CLEAN_SLATE_SQL = """
+DROP TABLE IF EXISTS events;
 DROP TABLE IF EXISTS project_files;
 DROP TABLE IF EXISTS commits;
 DROP TABLE IF EXISTS assets;
@@ -55,6 +56,17 @@ CREATE TABLE IF NOT EXISTS project_files (
     PRIMARY KEY (commit_id, file_path)
 );
 CREATE INDEX IF NOT EXISTS idx_project_files_commit ON project_files(commit_id);
+
+CREATE TABLE IF NOT EXISTS events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('push', 'pull')),
+    version_tag TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    client_host TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_events_project_created ON events(project_id, created_at DESC);
 """
 
 

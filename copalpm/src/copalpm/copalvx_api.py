@@ -63,6 +63,20 @@ def get_versions(project_name: str) -> list[str]:
         return []
 
 
+def get_events(project_name: str, limit: int = 10) -> list[dict]:
+    """Returns recent push/pull events for a project (newest first), or [] on error.
+
+    Each event is a dict with keys: kind ('push'|'pull'), version_tag, user, host,
+    created_at (ISO-8601 string). Absent on older servers — return [] silently.
+    """
+    try:
+        url = f"{_base_url()}/projects/{project_name}/events?limit={int(limit)}"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return json.loads(r.read())
+    except Exception:
+        return []
+
+
 def health() -> dict:
     """Returns health dict, or {"healthy": False} on error."""
     try:

@@ -3,7 +3,7 @@ import os
 import re
 import requests
 from urllib.parse import urlparse
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException
 from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
@@ -270,7 +270,11 @@ def confirm_uploads_bulk(request: BulkConfirmRequest, db: Session = Depends(get_
 
 
 @app.post("/commit")
-def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
+def create_commit(
+    request: CommitRequest,
+    x_copal_host: str = Header(..., alias="X-Copal-Host"),
+    db: Session = Depends(get_db),
+):
     logger.info("Creating commit '%s' for project '%s'", request.version_tag, request.project_id)
 
     # Validate tag format — a slash would silently break /checkout/{name}/{tag}
@@ -353,6 +357,17 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
                 VALUES (:cid, :aid, :path)
             """), links_to_create)
 
+        # Record the push event for the activity log
+        db.execute(text("""
+            INSERT INTO events (project_id, kind, version_tag, user_name, client_host)
+            VALUES (:pid, 'push', :tag, :user, :host)
+        """), {
+            "pid":  project_id,
+            "tag":  request.version_tag,
+            "user": request.author,
+            "host": x_copal_host,
+        })
+
         # Single commit — all or nothing
         db.commit()
         logger.info("Commit '%s' created with %d files.", request.version_tag, len(links_to_create))
@@ -374,11 +389,17 @@ def create_commit(request: CommitRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/checkout/{project_name}/{version_tag}")
-def checkout_version(project_name: str, version_tag: str, db: Session = Depends(get_db)):
-    logger.info("Checkout: %s @ %s", project_name, version_tag)
+def checkout_version(
+    project_name: str,
+    version_tag: str,
+    x_copal_user: str = Header(..., alias="X-Copal-User"),
+    x_copal_host: str = Header(..., alias="X-Copal-Host"),
+    db: Session = Depends(get_db),
+):
+    logger.info("Checkout: %s @ %s by %s@%s", project_name, version_tag, x_copal_user, x_copal_host)
 
     query = text("""
-        SELECT c.id
+        SELECT c.id, p.id
         FROM commits c
         JOIN projects p ON c.project_id = p.id
         WHERE p.name = :pname AND c.version_tag = :vtag
@@ -388,7 +409,24 @@ def checkout_version(project_name: str, version_tag: str, db: Session = Depends(
     if not result:
         raise HTTPException(status_code=404, detail="Project or Version not found")
 
-    commit_id = result[0]
+    commit_id, project_id = result[0], result[1]
+
+    # Record the pull event for the activity log
+    try:
+        db.execute(text("""
+            INSERT INTO events (project_id, kind, version_tag, user_name, client_host)
+            VALUES (:pid, 'pull', :tag, :user, :host)
+        """), {
+            "pid":  project_id,
+            "tag":  version_tag,
+            "user": x_copal_user,
+            "host": x_copal_host,
+        })
+        db.commit()
+    except Exception as e:
+        # Event log failure must not break the pull itself
+        db.rollback()
+        logger.warning("Failed to record pull event: %s", e)
 
     files_query = text("""
         SELECT pf.file_path, a.seaweed_fid, a.file_hash, a.size_bytes
@@ -429,6 +467,33 @@ def get_project_versions(project_name: str, db: Session = Depends(get_db)):
         return []
 
     return [row[0] for row in rows]
+
+
+@app.get("/projects/{project_name}/events")
+def get_project_events(project_name: str, limit: int = 50, db: Session = Depends(get_db)):
+    """Recent push/pull activity for a project, newest first."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+
+    rows = db.execute(text("""
+        SELECT e.kind, e.version_tag, e.user_name, e.client_host, e.created_at
+        FROM events e
+        JOIN projects p ON e.project_id = p.id
+        WHERE p.name = :name
+        ORDER BY e.created_at DESC
+        LIMIT :limit
+    """), {"name": project_name, "limit": limit}).fetchall()
+
+    return [
+        {
+            "kind":        row[0],
+            "version_tag": row[1],
+            "user":        row[2],
+            "host":        row[3],
+            "created_at":  row[4].isoformat() if row[4] else None,
+        }
+        for row in rows
+    ]
 
 
 @app.get("/projects/{project_name}/metadata")
