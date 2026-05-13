@@ -1040,3 +1040,84 @@ coverage of the touched areas).
 3. The HTTP body limit default rose to 50 MB. Existing deployments that set
    `MAX_REQUEST_BODY_MB` in their `.env` keep their override; defaults-only
    deployments simply get more headroom.
+
+---
+
+# Deploy verification (2026-05-14)
+
+Sec-A + Perf-A landed on the live LAN server (`192.168.178.161:8005`)
+behind two commits: `6b224f5` (the audit work) and `acd63c8` (a middleware
+hotfix described below).
+
+**Final state:** 35/35 integration tests pass against the live server,
+including the four "feature detection" tests that specifically prove the
+new server-side checks are enforcing:
+
+- `TestCleanupOrphans::test_endpoint_rejects_without_confirm_header`
+- `TestDeleteConfirmation::test_delete_rejects_without_confirm_header`
+- `TestIdentityHeaders::test_commit_rejects_malformed_host_header`
+- `TestIdentityHeaders::test_commit_rejects_overlong_host_header`
+
+## Middleware hotfix — what went wrong on the first deploy
+
+The first deploy of the Sec-A.3 body-size middleware caused **every `GET
+/projects` call to return 500**. Two layered bugs:
+
+1. **Wrapped `request._receive`** to count incoming bytes as a "lying
+   Content-Length" defence. Starlette's `BaseHTTPMiddleware` (which
+   `@app.middleware("http")` uses) reconstructs the downstream request
+   inside `call_next`, and the `_receive` override does not propagate
+   through that reconstruction in recent versions. The wrapper never
+   fired — but it set a private attribute that some downstream code
+   path stumbled over.
+2. **`return` inside a `finally` block** — the structure
+   `try: ... finally: if over_limit: return Response(413)` is a Python
+   anti-pattern that *suppresses* exceptions propagating from the
+   `try`. Python 3.14 (the new container's runtime) emitted
+   `SyntaxWarning: 'return' in a 'finally' block` at module load.
+   Combined with (1), legitimate endpoint exceptions surfaced as
+   opaque 500s rather than meaningful tracebacks.
+
+**Fix (commit `acd63c8`):** reverted to a Content-Length-only header
+check; kept the 50 MB cap. The "lying Content-Length" defence is gone,
+which is acceptable for a LAN-only deployment; revisit if Copal Tools
+ever fronts an untrusted network.
+
+## Lessons learned (logged for the next audit)
+
+- **Never `return` inside `finally`.** Python emits a `SyntaxWarning`
+  for a reason. If you need to swap the response on exit, use a flag
+  and an `if` after the `try/except`, not `try/finally`.
+- **Avoid private Starlette attributes inside `BaseHTTPMiddleware`.**
+  `_receive`, `_send`, etc. are not part of the public ASGI surface
+  and Starlette feels free to break them between minor versions. If
+  you genuinely need streaming-body inspection, write a *pure ASGI*
+  middleware (`async def app(scope, receive, send)`) and skip
+  `BaseHTTPMiddleware` entirely.
+- **Smoke-test the server end-to-end before declaring a middleware
+  change done.** "Unit tests pass" + "module imports cleanly" is not
+  enough — exercise the actual HTTP path. A 5-second
+  `curl /health && curl /projects` against a locally-built container
+  would have caught both bugs before any push.
+- **Coordinate breaking-protocol client + server deploys.** The 422 on
+  `/commit` for missing `X-Copal-Host` and the 400 on `DELETE` without
+  `X-Confirm-Delete` are exactly the kind of failure that strands old
+  clients. The current LAN is single-tenant so coordination is easy;
+  if Copal Tools grows users beyond one operator, the deploy order
+  (clients first, then server) becomes mandatory rather than
+  best-practice.
+
+## Open follow-ups (intentionally deferred)
+
+- **Events table retention** (N-H5) — daily
+  `DELETE FROM events WHERE created_at < now() - interval '180 days'`.
+- **`total_storage_bytes` denormalisation** (N-H7) — replace the
+  correlated subquery in `GET /projects` with a column updated on
+  commit/delete. The ETag short-circuit already covers the dashboard
+  polling case; this is only worth doing once the per-call latency
+  becomes a visible complaint.
+- **Per-file error reporting in `/confirm_uploads`** (CA6) — return
+  `{ok: [], failed: [{hash, reason}]}` so a partially-failed bulk
+  commit can retry only the failed entries.
+- **`chmod 0o600`** on `~/.copal/config.json` (#11) — single-user
+  workstation exposure; not impactful on the typical artist setup.

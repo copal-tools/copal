@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{name = "The Copal Tools Authors"}]
 dependencies = [
-    "argparse>=1.4.0",
+    # argparse is stdlib since Python 3.2 — no PyPI dependency needed.
     "pathspec>=0.12.1",
     "requests>=2.32.5",
 ]

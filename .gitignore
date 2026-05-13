@@ -1,0 +1,23 @@
+# Claude Code worktree metadata — local-only, never committed.
+.claude/
+
+# Python build / packaging artefacts that should never be tracked.
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test runner caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
