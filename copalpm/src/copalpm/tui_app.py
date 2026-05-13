@@ -576,11 +576,22 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#search-input", Input).focus()
+        self._session_cache: dict | None = None
+        self._stop_session_poller = threading.Event()
         self._refresh_data()
         self.set_interval(1,  self._tick_timer)
         self.set_interval(30, self._refresh_data)
         self.set_interval(60, self._poll_server)
         threading.Thread(target=self._fetch_server_data, daemon=True).start()
+        threading.Thread(target=self._session_poll_loop, daemon=True).start()
+
+    def on_unmount(self) -> None:
+        self._stop_session_poller.set()
+
+    def _session_poll_loop(self) -> None:
+        while not self._stop_session_poller.is_set():
+            self._session_cache = _active_session()
+            self._stop_session_poller.wait(5.0)
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -649,7 +660,7 @@ class DashboardScreen(Screen):
     # ── Timer ─────────────────────────────────────────────────────────────────
 
     def _tick_timer(self) -> None:
-        session = _active_session()
+        session = self._session_cache
         if session:
             pid    = session.get("project_id", "")
             name   = next((r["name"] for r in self._local_rows if r["id"] == pid), pid)
@@ -1488,6 +1499,8 @@ class ProjectDetailScreen(Screen):
         self._data: dict = {}
         self._auto_push = auto_push
         self._cvx_stats: dict | None = None
+        self._session_cache: dict | None = None
+        self._stop_session_poller = threading.Event()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1505,6 +1518,15 @@ class ProjectDetailScreen(Screen):
         cvx_name = self._data.get("copalvx", {}).get("project_name")
         if cvx_name:
             threading.Thread(target=self._fetch_cvx_stats, args=(cvx_name,), daemon=True).start()
+        threading.Thread(target=self._session_poll_loop, daemon=True).start()
+
+    def on_unmount(self) -> None:
+        self._stop_session_poller.set()
+
+    def _session_poll_loop(self) -> None:
+        while not self._stop_session_poller.is_set():
+            self._session_cache = _active_session()
+            self._stop_session_poller.wait(5.0)
 
     def _fetch_cvx_stats(self, cvx_name: str) -> None:
         stats = copalvx_api.get_project_stats(cvx_name)
@@ -1625,7 +1647,7 @@ class ProjectDetailScreen(Screen):
         body.mount(Static(""))
 
     def _tick_timer(self) -> None:
-        session = _active_session()
+        session = self._session_cache
         if session and session.get("project_id") == self._data.get("id"):
             elapsed        = _elapsed(session.get("start", ""))
             self.app.title = f"{self._data.get('name', '')}  ●  {elapsed}"
