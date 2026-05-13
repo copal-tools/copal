@@ -1,0 +1,28 @@
+# 1. Use the official image that includes 'uv' and Python 3.11
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+
+# 2. Set the working directory inside the container
+WORKDIR /app
+
+# 3. Install system dependencies (Still needed for psycopg2/greenlet compiling)
+#    Note: 'uv' images are based on Debian/Bookworm, so apt-get works the same.
+RUN apt-get update && apt-get install -y libpq-dev gcc g++
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev
+
+#    IMPORTANT: Add the new virtual environment to the PATH
+#    This allows Docker to find 'uvicorn' automatically
+ENV PATH="/app/.venv/bin:$PATH"
+
+
+# Copy the rest of the application code
+COPY . .
+
+# Expose port 8000
+EXPOSE 8000
+
+#    Run the app
+#    (No need for 'uv run' here because we used --system above)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

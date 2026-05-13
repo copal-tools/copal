@@ -1,0 +1,64 @@
+import getpass
+import json
+import os
+from pathlib import Path
+
+# 1. Define where the config lives (e.g., C:\Users\Name\.copal\config.json)
+CONFIG_DIR = Path.home() / ".copal"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+# 2. Default Settings (Fallback)
+DEFAULT_CONFIG = {
+    "server_ip": "192.168.178.161",
+    "api_port": 8005,
+    "filer_port": 8888,
+    "default_author": getpass.getuser(),
+    "default_projects_root": "",
+    "conflict_policy": "backup",
+}
+
+
+def load_config():
+    """Loads config from JSON, creates it if missing. Persists new default keys."""
+    if not CONFIG_FILE.exists():
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4)
+            print(f"ℹ️  Created new config file at: {CONFIG_FILE}")
+        except Exception as e:
+            print(f"⚠️  Could not create config file: {e}")
+            return DEFAULT_CONFIG
+
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            user_config = json.load(f)
+            merged = {**DEFAULT_CONFIG, **user_config}
+
+        if set(merged) - set(user_config):
+            try:
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(merged, f, indent=4)
+            except Exception:
+                pass
+
+        return merged
+    except Exception as e:
+        print(f"⚠️  Error reading config: {e}. Using defaults.")
+        return DEFAULT_CONFIG
+
+# 3. Load immediately
+SETTINGS = load_config()
+
+# 4. Export Constants
+SERVER_IP = SETTINGS["server_ip"]
+API_BASE = f"http://{SERVER_IP}:{SETTINGS['api_port']}"
+FILER_BASE = f"http://{SERVER_IP}:{SETTINGS['filer_port']}"
+
+# 5. Centralized Endpoints
+ENDPOINTS = {
+    "handshake": f"{API_BASE}/handshake",
+    "confirm": f"{API_BASE}/confirm_upload",
+    "commit": f"{API_BASE}/commit",
+    "checkout": f"{API_BASE}/checkout"
+}

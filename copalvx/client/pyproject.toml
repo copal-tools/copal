@@ -1,0 +1,33 @@
+[project]
+name = "asset-client"
+version = "0.1.0"
+description = "Asset management client for CopalVX"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{name = "The Copal Tools Authors"}]
+dependencies = [
+    "argparse>=1.4.0",
+    "pathspec>=0.12.1",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+copalvx = "tui:main"
+
+[tool.uv]
+package = true
+dev-dependencies = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q = quiet, -v can be passed manually for verbose
+addopts = "-q"
+
+[tool.hatch.build.targets.wheel]
+include = ["tui.py", "copal_core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
