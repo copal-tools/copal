@@ -46,6 +46,19 @@ def register_project(name, local_path, version=None):
     except Exception as e:
         print(f"⚠️ Failed to update registry: {e}")
 
+def lookup_path(name):
+    """Return the most recently used local path for `name`, or None.
+
+    Registry entries are sorted by last_accessed desc, so the first matching
+    name is the most recent. Returns None if the project was never pulled
+    or pushed from this machine.
+    """
+    for entry in load_registry():
+        if entry.get("name") == name:
+            return entry.get("path")
+    return None
+
+
 def remove_project(local_path):
     """Removes a project from the recent list (e.g., if deleted)."""
     projects = load_registry()

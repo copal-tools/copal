@@ -669,10 +669,15 @@ def do_pull(preset_project=None):
 
     print(f"  Tag: {bold(tag)}")
 
-    # Target directory
-    default_target = os.path.join(os.getcwd(), project)
-    tdir_input = input(f"  Target directory [{default_target}]: ").strip()
-    target_dir = tdir_input if tdir_input else default_target
+    # Target directory — use remembered path on repeat pulls; prompt only first time
+    remembered = registry.lookup_path(project)
+    if remembered:
+        target_dir = remembered
+        print(f"  Target directory: {bold(target_dir)} {dim('(remembered)')}")
+    else:
+        default_target = os.path.join(os.getcwd(), project)
+        tdir_input = input(f"  Target directory [{default_target}]: ").strip()
+        target_dir = tdir_input if tdir_input else default_target
 
     # Fetch manifest early so we have file data for smart conflict detection
     print("\n  Fetching manifest...")
@@ -890,7 +895,21 @@ def push_cli(project, tag, path, message=None, author=None):
 
 
 def pull_cli(project, tag, target, policy="backup", prefixes=None):
-    """Non-interactive pull — all params provided, exits 0 on success, 1 on failure."""
+    """Non-interactive pull — exits 0 on success, 1 on failure.
+
+    If `target` is None, falls back to the path remembered in the local
+    registry for this project. Fails if no remembered path exists.
+    """
+    if target is None:
+        target = registry.lookup_path(project)
+        if target is None:
+            print(
+                f"Error: No target directory given and no remembered location "
+                f"for project '{project}'. Pass an explicit target on first pull.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[CopalVX] Using remembered location: {target}")
     print(f"[CopalVX] Pull: {project} @ {tag} -> {target}")
 
     print("Fetching manifest...")
@@ -1068,7 +1087,7 @@ def main():
     pull_p = subparsers.add_parser("pull")
     pull_p.add_argument("project")
     pull_p.add_argument("tag")
-    pull_p.add_argument("target")
+    pull_p.add_argument("target", nargs="?", default=None)
     pull_p.add_argument("--policy", default="backup")
     pull_p.add_argument("--prefix", dest="prefixes", action="append", default=[])
 
