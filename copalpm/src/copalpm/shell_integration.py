@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -376,6 +377,48 @@ def cmd_shell_status(args) -> int:
     return 1
 
 
+# ── TUI spawn helper ─────────────────────────────────────────────────────────
+
+def _spawn_tui_in_terminal(folder: Path) -> None:
+    """Open a new terminal window running `copalpm tui --screen init --dir folder`.
+
+    The TUI needs a real TTY of its own — running it as a detached child of
+    Finder/Explorer (or piggy-backing on the invoking shell's TTY) makes
+    Textual either fail to attach or fight the parent for keyboard input.
+    """
+    binary = _copalpm_bin()
+
+    if platform.system() == "Windows":
+        # Prefer Windows Terminal if installed — it gives the TUI a proper
+        # ConPTY pseudo-terminal. Fall back to legacy console via cmd.
+        wt = shutil.which("wt.exe")
+        if wt:
+            cmd = [wt, "new-tab", "--title", "Copal: New Project",
+                   str(binary), "tui", "--screen", "init", "--dir", str(folder)]
+            subprocess.Popen(cmd, close_fds=True)
+            return
+        # Legacy: spawn cmd.exe with its own console window.
+        CREATE_NEW_CONSOLE = 0x00000010
+        cmd = [str(binary), "tui", "--screen", "init", "--dir", str(folder)]
+        subprocess.Popen(cmd, creationflags=CREATE_NEW_CONSOLE, close_fds=True)
+        return
+
+    # macOS — drive Terminal.app via osascript so the TUI gets a fresh window.
+    parts = [shlex.quote(str(binary)), "tui", "--screen", "init",
+             "--dir", shlex.quote(str(folder))]
+    shell_cmd = " ".join(parts)
+    # Escape for AppleScript string literal (backslashes first, then quotes).
+    shell_cmd_as = shell_cmd.replace("\\", "\\\\").replace('"', '\\"')
+    applescript = (
+        'tell application "Terminal" to activate\n'
+        f'tell application "Terminal" to do script "{shell_cmd_as}"'
+    )
+    subprocess.Popen(
+        ["osascript", "-e", applescript],
+        close_fds=True, start_new_session=True,
+    )
+
+
 # ── Hidden trigger handler (invoked by the OS shell verbs) ───────────────────
 
 def cmd_shell_trigger(args) -> int:
@@ -391,20 +434,11 @@ def cmd_shell_trigger(args) -> int:
     trigger = args.trigger
 
     if trigger == "new-project":
-        # Spawn `copalpm tui --screen init --dir <folder>` detached so the
-        # Explorer/Finder context menu returns immediately.
-        binary = _copalpm_bin()
-        cmd = [str(binary), "tui", "--screen", "init", "--dir", str(folder)]
-        kwargs = {}
-        if platform.system() == "Windows":
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-            kwargs["close_fds"] = True
-        else:
-            kwargs["start_new_session"] = True
+        # The TUI needs its own controlling terminal — sharing the parent's
+        # TTY makes Textual fight the parent shell for stdin (keystrokes go
+        # to both). Spawn a fresh terminal window per platform.
         try:
-            subprocess.Popen(cmd, **kwargs)
+            _spawn_tui_in_terminal(folder)
         except OSError as e:
             _notify("Copal", f"Could not launch TUI: {e}", kind="error")
             return 1
