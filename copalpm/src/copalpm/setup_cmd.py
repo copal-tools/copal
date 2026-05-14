@@ -194,6 +194,7 @@ def cmd_setup(args) -> int:
 
     print("Copal setup")
     print("===========")
+    print("Installs the background task-tracker service and right-click shortcuts.")
     print()
 
     results: list[tuple[str, bool, str]] = []

@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     s_shell = p_shell.add_subparsers(dest="cmd", required=True, metavar="<cmd>")
     s_shell.add_parser("install",
-                       help="Add Copal verbs to the OS shell (Win HKCU / Mac Quick Actions)")
+                       help="Add right-click menu shortcuts on Windows Explorer and macOS Finder")
     s_shell.add_parser("uninstall", help="Remove the Copal verbs from the OS shell")
     s_shell.add_parser("status", help="Show which Copal verbs are currently installed")
 
