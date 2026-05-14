@@ -34,7 +34,7 @@ from copalpm import copalvx_api
 from copalpm.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
-    load_templates, save_templates, upsert_registry,
+    load_templates, save_templates, slug_title, upsert_registry,
 )
 
 
@@ -308,6 +308,11 @@ class InitScreen(Screen):
         width: 5;
         margin-left: 1;
     }
+    #name-preview {
+        color: $text-muted;
+        margin-top: 0;
+        margin-bottom: 1;
+    }
     """
 
     def __init__(self, initial_dir: str | None = None) -> None:
@@ -323,6 +328,7 @@ class InitScreen(Screen):
             with ScrollableContainer(id="init-scroll"):
                 yield Label("Name *", classes="field-label")
                 yield Input(placeholder="Project name", id="name-input")
+                yield Static(self._preview_text(""), id="name-preview")
                 yield Label("Preset", classes="field-label")
                 yield RadioSet(
                     RadioButton("Custom"),
@@ -383,6 +389,26 @@ class InitScreen(Screen):
         for w in self.query(".custom-field"):
             w.display = show
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "name-input":
+            return
+        try:
+            self.query_one("#name-preview", Static).update(self._preview_text(event.value))
+        except Exception:
+            # Preview Static may not be mounted yet during early input events.
+            pass
+
+    def _preview_text(self, raw_name: str) -> str:
+        """Show the user the exact ID and CopalVX project name their input will produce."""
+        slug = slug_title(raw_name or "")
+        if not slug:
+            return "[yellow]No letters or digits yet[/yellow]"
+        date = datetime.now().strftime("%d%m%y")
+        return (
+            f"[dim]ID:[/dim] PROJ-{slug}-{date}  "
+            f"[dim]•[/dim]  [dim]CopalVX:[/dim] {slug}-{date}"
+        )
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
             self.app.pop_screen()
@@ -409,6 +435,18 @@ class InitScreen(Screen):
         name = self.query_one("#name-input", Input).value.strip()
         if not name:
             self.notify("Project name is required.", severity="error")
+            self.query_one("#name-input", Input).focus()
+            return
+
+        # Guard against names that transliterate to an empty slug (emoji-only,
+        # pure symbols, etc.). Without this, the folder name and CopalVX
+        # project name would degrade to just the date suffix (or worse, a
+        # leading hyphen). See pm._to_ascii and CLAUDE.md gotcha #14.
+        if not slug_title(name):
+            self.notify(
+                "Please use a name with at least one letter or digit.",
+                title="Project name", severity="warning",
+            )
             self.query_one("#name-input", Input).focus()
             return
 
@@ -734,54 +772,90 @@ class DashboardScreen(Screen):
         if not versions:
             self.notify("No versions on server.", title="CopalVX", severity="warning")
             return
-        if not path:
-            try:
-                cfg  = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
-                path = cfg.get("projects_dir") or str(Path.home() / "Projects")
-            except Exception:
-                path = str(Path.home() / "Projects")
 
-        def on_confirm(result: dict | None) -> None:
+        def _continue_with_path(resolved_path: str) -> None:
+            def on_confirm(result: dict | None) -> None:
+                if result is None:
+                    return
+                tag           = result["tag"]
+                local_version = project.get("cvx_local_version")
+
+                def _fetch_diff() -> None:
+                    folders = []
+                    if local_version and local_version != tag:
+                        try:
+                            diff = copalvx_api.get_diff(cvx_name, local_version, tag)
+                            if diff:
+                                folders = copalvx_api.extract_changed_folders(diff)
+                        except Exception:
+                            pass
+                    if folders:
+                        modal = SelectivePullModal(cvx_name, tag, folders)
+                        self.app.call_from_thread(self.app.push_screen, modal, on_folder_select)
+                    else:
+                        self.app.call_from_thread(_start_pull, [])
+
+                def on_folder_select(sel: dict | None) -> None:
+                    if sel is None:
+                        return
+                    _start_pull(sel["prefixes"])
+
+                def _start_pull(prefixes: list[str]) -> None:
+                    progress = CopalVXProgressModal(f"Pull: {cvx_name} @ {tag}")
+                    self.app.push_screen(progress)
+                    def _run() -> None:
+                        try:
+                            self.app.call_from_thread(
+                                progress.write_line,
+                                f"[dim]args:[/dim] project={cvx_name!r}  "
+                                f"tag={tag!r}  target={resolved_path!r}  "
+                                f"prefixes={prefixes!r}",
+                            )
+                            if not (cvx_name and tag and resolved_path):
+                                self.app.call_from_thread(
+                                    progress.write_line,
+                                    "[red bold]Aborted:[/red bold] one of the three "
+                                    "required args is empty. The subprocess would have "
+                                    "shifted args and given a confusing error.",
+                                )
+                                self.app.call_from_thread(progress.mark_done, False)
+                                return
+                            proc = copalvx_api.run_pull(cvx_name, tag, resolved_path, prefixes=prefixes)
+                            _cvx_stream(proc, progress, self.app, self._refresh_data)
+                        except Exception as e:
+                            self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
+                            self.app.call_from_thread(progress.mark_done, False)
+                    threading.Thread(target=_run, daemon=True).start()
+
+                threading.Thread(target=_fetch_diff, daemon=True).start()
+
+            self.app.push_screen(CopalVXPullModal(cvx_name, versions, resolved_path), on_confirm)
+
+        if path:
+            _continue_with_path(path)
+            return
+
+        # First pull of a server-only project — ask the user which parent
+        # folder to drop it into; we append the project name as the actual
+        # target so files always land in their own subfolder.
+        default_parent = self._default_pull_parent()
+
+        def on_pick_dest(result: dict | None) -> None:
             if result is None:
                 return
-            tag           = result["tag"]
-            local_version = project.get("cvx_local_version")
+            _continue_with_path(result["path"])
 
-            def _fetch_diff() -> None:
-                folders = []
-                if local_version and local_version != tag:
-                    try:
-                        diff = copalvx_api.get_diff(cvx_name, local_version, tag)
-                        if diff:
-                            folders = copalvx_api.extract_changed_folders(diff)
-                    except Exception:
-                        pass
-                if folders:
-                    modal = SelectivePullModal(cvx_name, tag, folders)
-                    self.app.call_from_thread(self.app.push_screen, modal, on_folder_select)
-                else:
-                    self.app.call_from_thread(_start_pull, [])
+        self.app.push_screen(PullDestinationModal(cvx_name, default_parent), on_pick_dest)
 
-            def on_folder_select(sel: dict | None) -> None:
-                if sel is None:
-                    return
-                _start_pull(sel["prefixes"])
-
-            def _start_pull(prefixes: list[str]) -> None:
-                progress = CopalVXProgressModal(f"Pull: {cvx_name} @ {tag}")
-                self.app.push_screen(progress)
-                def _run() -> None:
-                    try:
-                        proc = copalvx_api.run_pull(cvx_name, tag, path, prefixes=prefixes)
-                        _cvx_stream(proc, progress, self.app, self._refresh_data)
-                    except Exception as e:
-                        self.app.call_from_thread(progress.write_line, f"[red]{e}[/red]")
-                        self.app.call_from_thread(progress.mark_done, False)
-                threading.Thread(target=_run, daemon=True).start()
-
-            threading.Thread(target=_fetch_diff, daemon=True).start()
-
-        self.app.push_screen(CopalVXPullModal(cvx_name, versions, path), on_confirm)
+    @staticmethod
+    def _default_pull_parent() -> str:
+        """Suggested parent folder for first pull: projects_dir or ~/Projects."""
+        try:
+            cfg  = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
+            root = cfg.get("projects_dir") or str(Path.home() / "Projects")
+        except Exception:
+            root = str(Path.home() / "Projects")
+        return root
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -839,6 +913,124 @@ class CopalVXPushModal(ModalScreen):
         msg = self.query_one("#msg-input", Input).value.strip()
         if tag:
             self.dismiss({"tag": tag, "message": msg})
+
+
+class PullDestinationModal(ModalScreen):
+    """First-pull destination picker for a server-only CopalVX project.
+
+    User picks a **parent** folder; we append the project name to it as the
+    actual pull target. Shown when the project has no local row yet
+    (no `project.path`). Mirrors the F2 folder-picker pattern from InitScreen.
+    """
+
+    DEFAULT_CSS = """
+    PullDestinationModal { align: center middle; }
+    #pull-dest-box {
+        width: 70;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #pull-dest-row { height: auto; margin-top: 1; }
+    #pull-dest-row #pull-dest-input { width: 1fr; }
+    #pull-dest-row #pull-dest-browse {
+        min-width: 5;
+        width: 5;
+        margin-left: 1;
+    }
+    #pull-dest-preview { margin-top: 1; color: $text-muted; }
+    #pull-dest-hint { margin-top: 1; color: $text-muted; }
+    #pull-dest-buttons { margin-top: 1; height: auto; }
+    #pull-dest-buttons Button { margin-right: 1; }
+    """
+
+    def __init__(self, project_name: str, default_parent: str) -> None:
+        super().__init__()
+        self._project_name  = project_name
+        self._default_parent = default_parent
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="pull-dest-box"):
+            yield Label(f"[bold]Pull:[/bold] {self._project_name}")
+            yield Rule()
+            yield Label("Parent folder (this machine):")
+            with Horizontal(id="pull-dest-row"):
+                yield Input(value=self._default_parent, id="pull-dest-input")
+                yield Button("\U0001F4C1", id="pull-dest-browse")
+            yield Static(self._preview_text(self._default_parent), id="pull-dest-preview")
+            yield Static(
+                "[dim]The project folder is created inside the parent.[/dim]",
+                id="pull-dest-hint",
+            )
+            with Horizontal(id="pull-dest-buttons"):
+                yield Button("Continue", variant="primary", id="pull-dest-ok")
+                yield Button("Cancel", variant="default", id="pull-dest-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#pull-dest-input", Input).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self.query_one("#pull-dest-preview", Static).update(
+            self._preview_text(event.value)
+        )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._confirm()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "pull-dest-cancel":
+            self.dismiss(None)
+        elif event.button.id == "pull-dest-ok":
+            self._confirm()
+        elif event.button.id == "pull-dest-browse":
+            self._open_dir_picker()
+
+    def _preview_text(self, parent_raw: str) -> str:
+        parent_raw = (parent_raw or "").strip()
+        if not parent_raw:
+            return "[dim]Will pull into: (pick a parent folder)[/dim]"
+        try:
+            target = Path(parent_raw).expanduser() / self._project_name
+        except Exception:
+            return "[dim]Will pull into: (invalid path)[/dim]"
+        return f"[dim]Will pull into:[/dim] {target}"
+
+    def _confirm(self) -> None:
+        raw = self.query_one("#pull-dest-input", Input).value.strip()
+        if not raw:
+            self.notify("Pick a parent folder first.", severity="warning")
+            return
+        parent = Path(raw).expanduser()
+        if not parent.is_absolute():
+            self.notify("Please enter an absolute path.", severity="warning")
+            return
+        target = parent / self._project_name
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.notify(f"Could not create folder: {e}", severity="error")
+            return
+        self.dismiss({"path": str(target)})
+
+    def _open_dir_picker(self) -> None:
+        current = self.query_one("#pull-dest-input", Input).value.strip() or self._default_parent
+        start = Path(current).expanduser()
+        while not start.exists() and start != start.parent:
+            start = start.parent
+        if not start.exists():
+            start = Path.home()
+
+        def on_pick(path: Path | None) -> None:
+            if path is not None:
+                self.query_one("#pull-dest-input", Input).value = str(path)
+
+        self.app.push_screen(SelectDirectory(str(start)), on_pick)
 
 
 class CopalVXPullModal(ModalScreen):
@@ -1110,7 +1302,15 @@ class CopalVXFilesModal(ModalScreen):
 
 
 class CopalVXProgressModal(ModalScreen):
-    """Shows streaming progress for a CopalVX push/pull subprocess."""
+    """Shows streaming progress for a CopalVX push/pull subprocess.
+
+    Press `c` to copy the entire log to the system clipboard — useful for
+    sharing errors.
+    """
+
+    BINDINGS = [
+        Binding("c", "copy_log", "Copy log", show=True),
+    ]
 
     DEFAULT_CSS = """
     CopalVXProgressModal { align: center middle; }
@@ -1130,13 +1330,15 @@ class CopalVXProgressModal(ModalScreen):
         super().__init__()
         self._title = title
         self._done = False
+        self._lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cvx-progress-box"):
             yield Label(f"[bold]{self._title}[/bold]")
             yield ProgressBar(total=100, show_eta=False, id="cvx-progress-bar")
             yield RichLog(highlight=True, markup=True, id="cvx-progress-log")
-            yield Static("[dim]Esc to dismiss when done[/dim]", id="cvx-progress-hint")
+            yield Static("[dim]C to copy log  •  Esc to dismiss when done[/dim]",
+                         id="cvx-progress-hint")
 
     def on_key(self, event) -> None:
         if event.key == "escape" and self._done:
@@ -1148,16 +1350,39 @@ class CopalVXProgressModal(ModalScreen):
         bar.update(total=total, progress=completed)
 
     def write_line(self, text: str) -> None:
+        self._lines.append(_strip_markup(text))
         self.query_one("#cvx-progress-log", RichLog).write(text)
 
     def mark_done(self, success: bool) -> None:
         self._done = True
         log = self.query_one("#cvx-progress-log", RichLog)
-        if success:
-            log.write("[green bold]Done.[/green bold]")
-        else:
-            log.write("[red bold]Failed — see above.[/red bold]")
-        self.query_one("#cvx-progress-hint", Static).update("[dim]Esc to close[/dim]")
+        msg = "Done." if success else "Failed — see above."
+        self._lines.append(msg)
+        log.write(f"[green bold]{msg}[/green bold]" if success
+                  else f"[red bold]{msg}[/red bold]")
+        self.query_one("#cvx-progress-hint", Static).update(
+            "[dim]C to copy log  •  Esc to close[/dim]"
+        )
+
+    def action_copy_log(self) -> None:
+        text = "\n".join(self._lines).strip()
+        if not text:
+            self.notify("Nothing to copy yet.", severity="warning")
+            return
+        try:
+            self.app.copy_to_clipboard(text)
+        except Exception as e:
+            self.notify(f"Clipboard error: {e}", severity="error")
+            return
+        self.notify(f"Copied {len(self._lines)} line(s) to clipboard.",
+                    title="CopalVX")
+
+
+_MARKUP_RE = re.compile(r"\[/?[^\[\]]*?\]")
+
+def _strip_markup(text: str) -> str:
+    """Strip Rich/Textual markup so clipboard content is plain readable text."""
+    return _MARKUP_RE.sub("", text)
 
 
 class DeleteProjectModal(ModalScreen):

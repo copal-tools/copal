@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from unidecode import unidecode
 
 from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
 
@@ -20,19 +21,33 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _to_ascii(s: str) -> str:
+    """Transliterate Unicode to ASCII so the slug pipeline preserves letters.
+
+    Greek `Κ` → `K`, `α` → `a`; Cyrillic `П` → `P`; accented Latin `é` → `e`.
+    Symbols and emoji that have no ASCII counterpart are dropped here. The
+    downstream regex strip in `slug_title` / `make_slug` then removes whatever
+    residual punctuation remains.
+
+    See `copalpm/CLAUDE.md` gotcha #14 — undoing this step re-introduces the
+    `-40-140526` bug where Greek input collapsed to symbols-only output.
+    """
+    return unidecode(s or "")
+
+
 def slug_title(title: str) -> str:
-    """UPPERCASE slug for project ID: spaces → hyphens, strip non-alphanumeric."""
-    s = title.strip().replace(" ", "-")
+    """UPPERCASE slug for project ID: ASCII-fold, spaces → hyphens, strip non-alphanumeric."""
+    s = _to_ascii(title).strip().replace(" ", "-")
     s = re.sub(r"[^A-Za-z0-9\-_]+", "", s)
-    s = re.sub(r"-{2,}", "-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-_")
     return s.upper()
 
 
 def make_slug(title: str) -> str:
-    """Lowercase slug for project.yaml slug field: spaces → hyphens."""
-    s = title.strip().lower().replace(" ", "-")
+    """Lowercase slug for project.yaml slug field: ASCII-fold, spaces → hyphens."""
+    s = _to_ascii(title).strip().lower().replace(" ", "-")
     s = re.sub(r"[^a-z0-9\-]+", "", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
+    s = re.sub(r"-{2,}", "-", s).strip("-_")
     return s
 
 
