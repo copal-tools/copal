@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import threading
+import urllib.error
 import urllib.request
 import yaml
 from datetime import datetime, timezone
@@ -40,6 +41,16 @@ from copalpm.pm import (
 
 # ── Service helpers ────────────────────────────────────────────────────────────
 
+class ServiceUnavailable(Exception):
+    """Background task-tracker service is not configured or not running."""
+
+
+_SERVICE_DOWN_MSG = (
+    "Background service isn't running. Run `copalpm setup` to install it, "
+    "or `copalpm service install` if it's already configured."
+)
+
+
 def _active_session() -> dict | None:
     cfg_path = DATA_DIR / "config.json"
     if not cfg_path.exists():
@@ -58,16 +69,22 @@ def _active_session() -> dict | None:
 
 
 def _service_call(method: str, endpoint: str, body: dict | None = None) -> dict:
-    cfg  = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
-    port = cfg.get("port", 5123)
-    data = json.dumps(body).encode() if body is not None else None
-    req  = urllib.request.Request(
-        f"http://127.0.0.1:{port}{endpoint}",
-        data=data, method=method,
-        headers={"X-API-Key": cfg["api_key"], "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read())
+    cfg_path = DATA_DIR / "config.json"
+    if not cfg_path.exists():
+        raise ServiceUnavailable(_SERVICE_DOWN_MSG)
+    try:
+        cfg  = json.loads(cfg_path.read_text(encoding="utf-8"))
+        port = cfg.get("port", 5123)
+        data = json.dumps(body).encode() if body is not None else None
+        req  = urllib.request.Request(
+            f"http://127.0.0.1:{port}{endpoint}",
+            data=data, method=method,
+            headers={"X-API-Key": cfg["api_key"], "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except urllib.error.URLError as e:
+        raise ServiceUnavailable(_SERVICE_DOWN_MSG) from e
 
 
 def _elapsed(start_iso: str) -> str:
@@ -668,6 +685,10 @@ class DashboardScreen(Screen):
                     "is_server_only":    True,
                 })
 
+        if not local and not server_only:
+            container.mount(self._empty_state(has_query=bool(query)))
+            return
+
         for row in local:
             svr        = self._cvx_latest.get(row.get("cvx_name")) if row.get("cvx_name") else None
             has_update = bool(svr and svr != row.get("cvx_local_version"))
@@ -677,6 +698,28 @@ class DashboardScreen(Screen):
             container.mount(Rule())
         for row in server_only:
             container.mount(ProjectRow(row))
+
+    def _empty_state(self, has_query: bool) -> Static:
+        if has_query:
+            text = (
+                "[dim]No projects match your search.[/dim]\n"
+                "[dim]Clear the search box to see everything.[/dim]"
+            )
+        elif self._local_rows:
+            text = (
+                "[dim]No projects match your filters.[/dim]\n"
+                "[dim]Toggle the 'Server projects' checkbox or clear the search.[/dim]"
+            )
+        else:
+            text = (
+                "No projects yet.\n\n"
+                "[dim]Press[/dim] [b]N[/b] [dim]to create your first project,"
+                " or wait for server projects to load.[/dim]"
+            )
+        widget = Static(text, id="empty-state")
+        widget.styles.padding = (4, 2)
+        widget.styles.content_align = ("center", "middle")
+        return widget
 
     def _poll_server(self) -> None:
         threading.Thread(target=self._fetch_server_data, daemon=True).start()
@@ -1923,6 +1966,8 @@ class ProjectDetailScreen(Screen):
                         f"{fmt_h(resp.get('duration_sec', 0))} logged.",
                         title="■ Stopped",
                     )
+            except ServiceUnavailable as e:
+                self.notify(str(e), title="Service not running", severity="error")
             except Exception as e:
                 self.notify(str(e), title="Error", severity="error")
             self._refresh_data()
@@ -1939,6 +1984,8 @@ class ProjectDetailScreen(Screen):
                     })
                     label = f" — {description}" if description else ""
                     self.notify(f"{self._data.get('name','')}{label}", title="● Started")
+                except ServiceUnavailable as e:
+                    self.notify(str(e), title="Service not running", severity="error")
                 except Exception as e:
                     self.notify(str(e), title="Error", severity="error")
                 self._refresh_data()
