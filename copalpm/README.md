@@ -182,7 +182,7 @@ Practical consequences:
 - Renaming on the CopalVX side (`[N]` in either TUI) updates only the
   CopalVX name — the Title and ID stay put.
 - Non-ASCII Titles (e.g. Greek, CJK, accented Latin) are transliterated via
-  `unidecode` before hitting the slug; pure-emoji Titles are rejected with a
+  `anyascii` before hitting the slug; pure-emoji Titles are rejected with a
   toast because they slug to nothing.
 
 ---
