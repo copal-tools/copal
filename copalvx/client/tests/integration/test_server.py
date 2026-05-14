@@ -96,6 +96,43 @@ class TestMetadataNoCommits:
 
 
 # ---------------------------------------------------------------------------
+# GET /projects (listing) — Decimal serialization regression
+# ---------------------------------------------------------------------------
+
+class TestProjectsListSerialization:
+    """Regression for the 2026-05-14 500 on GET /projects.
+
+    PostgreSQL SUM(BIGINT) returns NUMERIC → SQLAlchemy maps it to
+    decimal.Decimal. The endpoint uses Response(content=json.dumps(payload))
+    which bypasses FastAPI's encoder, so stdlib json.dumps() raised
+    `TypeError: Object of type Decimal is not JSON serializable` on every
+    request. Fix: explicit int() casts on numeric aggregate fields.
+    """
+
+    def test_list_returns_200_with_well_formed_json(self):
+        r = requests.get(f"{BASE}/projects", timeout=5)
+        assert r.status_code == 200, (
+            f"GET /projects returned {r.status_code}: {r.text[:300]}"
+        )
+        data = r.json()
+        assert isinstance(data, list)
+
+    def test_total_storage_bytes_is_a_number(self, project):
+        # The `project` fixture seeds at least one commit + asset, which makes
+        # the SUM aggregate return a non-NULL NUMERIC — the path that used
+        # to break json.dumps.
+        data = requests.get(f"{BASE}/projects", timeout=5).json()
+        entry = next((p for p in data if p["name"] == project), None)
+        assert entry is not None, f"project {project!r} not found in list"
+        assert isinstance(entry["total_storage_bytes"], int)
+        assert entry["total_storage_bytes"] >= 0
+        # version_count and author_count also come from aggregate functions;
+        # ensure they're plain ints too.
+        assert isinstance(entry["version_count"], int)
+        assert isinstance(entry["author_count"], int)
+
+
+# ---------------------------------------------------------------------------
 # Handshake with multiple files — C2 fix (IN → ANY)
 # ---------------------------------------------------------------------------
 
