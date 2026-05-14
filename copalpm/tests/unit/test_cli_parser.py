@@ -253,6 +253,51 @@ def test_service_status():
     assert args.cmd == "status"
 
 
+# ── `setup` / `teardown` umbrella commands ────────────────────────────────────
+
+def test_setup_default():
+    args = _parse(["setup"])
+    assert args.group == "setup"
+    assert args.service_only is False
+    assert args.shell_only is False
+    assert args.skip_service is False
+    assert args.skip_shell is False
+
+
+def test_setup_service_only():
+    args = _parse(["setup", "--service-only"])
+    assert args.service_only is True
+    assert args.shell_only is False
+
+
+def test_setup_shell_only():
+    args = _parse(["setup", "--shell-only"])
+    assert args.shell_only is True
+    assert args.service_only is False
+
+
+def test_setup_service_and_shell_only_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        _parse(["setup", "--service-only", "--shell-only"])
+
+
+def test_setup_skip_flags():
+    args = _parse(["setup", "--skip-service"])
+    assert args.skip_service is True
+    args = _parse(["setup", "--skip-shell"])
+    assert args.skip_shell is True
+
+
+def test_teardown_default():
+    args = _parse(["teardown"])
+    assert args.group == "teardown"
+
+
+def test_teardown_with_skip_flags():
+    args = _parse(["teardown", "--skip-shell"])
+    assert args.skip_shell is True
+
+
 # ── `shell-integration` group ─────────────────────────────────────────────────
 
 def test_shell_integration_install():

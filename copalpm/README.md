@@ -22,8 +22,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 # 3. Install CopalPM
 uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalpm"
 
-# 4. Install and start the background time-tracking service
-copalpm service install
+# 4. One-shot setup: background service + Finder Quick Actions
+copalpm setup
 ```
 
 ### Windows
@@ -35,12 +35,19 @@ winget install astral-sh.uv
 # 2. Install CopalPM
 uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalpm"
 
-# 3. Install NSSM (required for the time-tracking service)
-winget install NSSM.NSSM
-
-# 4. Install and start the background time-tracking service (Admin PowerShell)
-copalpm service install
+# 3. From an elevated terminal (Win+X -> Terminal (Admin)):
+#    one-shot setup installs NSSM via winget, the background service,
+#    and the Explorer right-click verbs.
+copalpm setup
 ```
+
+`copalpm setup` is idempotent — safe to re-run. It will skip whatever is
+already in place. Reverse with `copalpm teardown` (also idempotent; user data
+in `%APPDATA%\copalpm\` / `~/.config/copalpm/` is preserved).
+
+For partial installs, `copalpm setup --service-only` or `--shell-only` skips
+the other half. The granular `copalpm service install` and
+`copalpm shell-integration install` commands remain available for advanced use.
 
 ### Update
 

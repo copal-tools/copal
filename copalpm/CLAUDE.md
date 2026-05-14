@@ -47,6 +47,8 @@ copalpm/
 
 ```
 copalpm                            # default → launch TUI
+copalpm setup                      # one-shot install: service + shell integration
+copalpm teardown                   # reverse of setup (user data preserved)
 
 copalpm project init <name>        # create + register a new project
 copalpm project list               # list registered projects
@@ -108,6 +110,32 @@ The `copalpm task-tracker` subcommand runs as a daemon, installed via `copalpm s
 Service install internals:
 - **macOS:** writes a launchd plist at `~/Library/LaunchAgents/com.copal-tools.copalpm.task-tracker.plist`. `ProgramArguments` is a 2-element array: `[<copalpm binary>, "task-tracker"]`. Loaded via `launchctl bootstrap gui/<uid>`.
 - **Windows:** uses NSSM (`winget install NSSM.NSSM`). Service named `CopalPMTaskTracker`. NSSM install args: `[<copalpm.exe>, "task-tracker"]`. Pins `APPDATA` env so the service writes to the installing user's data dir.
+
+---
+
+## Setup orchestration
+
+`copalpm setup` (and its mirror `copalpm teardown`) live in `setup_cmd.py`.
+They wrap `cmd_install_service` (pm.py) and `cmd_shell_install`
+(shell_integration.py) under one umbrella with a single admin preflight on
+Windows, idempotency probes (skip if already installed), per-step status
+output, and a final summary. Step runners (`_do_service_install`,
+`_do_shell_install`, etc.) return `(ok: bool, msg: str)` so the orchestrator
+can render a uniform "[OK] / [FAILED] step-name: msg" line per step.
+
+NSSM auto-install: if `nssm` isn't on PATH and the service step is in scope,
+setup tries `winget install --silent NSSM.NSSM` once. Any failure (winget
+absent, install error, or NSSM still not on PATH after install) downgrades
+to a clear printed instruction rather than aborting. Skip flags (`--shell-only`,
+`--skip-service`) bypass NSSM detection entirely.
+
+The granular commands (`copalpm service install`, `copalpm shell-integration
+install`) stay for users who want fine-grained control or who are diagnosing
+a partial install. Setup just calls them in order.
+
+Teardown removes the shell verbs **before** the service so users never see
+a brief window where right-clicking surfaces a verb that points at a
+just-removed daemon.
 
 ---
 

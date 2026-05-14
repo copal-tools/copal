@@ -6,6 +6,8 @@
 #
 # Top-level subcommand groups:
 #   tui                — launch the TUI (also the default when no args given)
+#   setup              — one-shot install of service + shell integration
+#   teardown           — reverse of setup (remove service + shell verbs)
 #   project            — registry operations (init/list/status/register/scan/remove/rollup)
 #   record             — project.yaml operations (show/get/set/phase/validate/sync-time/copalvx-update)
 #   time               — time tracking (start/stop/status/log)
@@ -57,6 +59,7 @@ from .shell_integration import (
     cmd_shell_status,
     cmd_shell_trigger,
 )
+from .setup_cmd import cmd_setup, cmd_teardown
 
 
 # ── Parser construction ───────────────────────────────────────────────────────
@@ -74,6 +77,35 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Open the TUI directly on a specific screen")
     p_tui.add_argument("--dir", metavar="PATH", default=None,
                        help="With --screen init, pre-fill the project folder")
+
+    # setup / teardown ──────────────────────────────────────────────────────
+    p_setup = groups.add_parser(
+        "setup",
+        help="One-shot install of the background service and shell integration",
+    )
+    setup_skip = p_setup.add_mutually_exclusive_group()
+    setup_skip.add_argument("--service-only", action="store_true",
+                            help="Install only the background service")
+    setup_skip.add_argument("--shell-only", action="store_true",
+                            help="Install only the right-click shell integration")
+    p_setup.add_argument("--skip-service", action="store_true",
+                         help="Skip the background-service step")
+    p_setup.add_argument("--skip-shell", action="store_true",
+                         help="Skip the shell-integration step")
+
+    p_teardown = groups.add_parser(
+        "teardown",
+        help="Reverse of setup (remove service and shell integration)",
+    )
+    teardown_skip = p_teardown.add_mutually_exclusive_group()
+    teardown_skip.add_argument("--service-only", action="store_true",
+                               help="Remove only the background service")
+    teardown_skip.add_argument("--shell-only", action="store_true",
+                               help="Remove only the right-click shell integration")
+    p_teardown.add_argument("--skip-service", action="store_true",
+                            help="Skip the background-service step")
+    p_teardown.add_argument("--skip-shell", action="store_true",
+                            help="Skip the shell-integration step")
 
     # project ────────────────────────────────────────────────────────────────
     p_proj = groups.add_parser("project", help="Project registry operations")
@@ -282,6 +314,12 @@ def main():
 
     if args.group == "shell-trigger":
         return cmd_shell_trigger(args)
+
+    if args.group == "setup":
+        return cmd_setup(args)
+
+    if args.group == "teardown":
+        return cmd_teardown(args)
 
     # Unreachable — argparse rejects unknown groups before we get here
     ap.error(f"unknown group: {args.group}")
