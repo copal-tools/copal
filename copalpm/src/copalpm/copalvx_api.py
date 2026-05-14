@@ -162,12 +162,17 @@ def delete_project(project_name: str, delete_orphan_files: bool = False) -> dict
 
 
 def run_push(project: str, tag: str, path: str, message: str = "", author: str = "") -> subprocess.Popen:
-    """Starts a non-interactive push subprocess. Returns the Popen object."""
-    args = ["push", project, tag, path]
+    """Starts a non-interactive push subprocess. Returns the Popen object.
+
+    Positionals are passed after `--` so values starting with `-` (e.g. a
+    project name like `-40-140526`) aren't parsed as argparse flags.
+    """
+    args: list[str] = ["push"]
     if message:
         args += ["--message", message]
     if author:
         args += ["--author", author]
+    args += ["--", project, tag, path]
     cmd, cwd = _resolve_copalvx(args)
     return _popen(cmd, cwd)
 
@@ -212,9 +217,14 @@ def extract_changed_folders(diff_result: dict) -> list[dict]:
 
 def run_pull(project: str, tag: str, target: str, policy: str = "backup",
              prefixes: list[str] | None = None) -> subprocess.Popen:
-    """Starts a non-interactive pull subprocess. Returns the Popen object."""
-    args = ["pull", project, tag, target, "--policy", policy]
+    """Starts a non-interactive pull subprocess. Returns the Popen object.
+
+    Positionals are passed after `--` so values starting with `-` (e.g. a
+    project name like `-40-140526`) aren't parsed as argparse flags.
+    """
+    args: list[str] = ["pull", "--policy", policy]
     for p in (prefixes or []):
         args += ["--prefix", p]
+    args += ["--", project, tag, target]
     cmd, cwd = _resolve_copalvx(args)
     return _popen(cmd, cwd)

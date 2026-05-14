@@ -89,6 +89,34 @@ copalpm shell-trigger {start|stop|new-project} --folder PATH
 
 ---
 
+## Project identifiers (Title vs ID vs CopalVX name)
+
+Three identifiers travel with every project. They serve different audiences
+and *can* drift apart — knowing which is which prevents bugs like the Greek-
+name regression that produced a CopalVX project literally named `-40-140526`
+(see gotcha #14).
+
+| Name | Lives in | Charset | Set by | Used for |
+|------|----------|---------|--------|----------|
+| **Title** | `project.yaml:name` (also `name` in `registry.json`) | Any Unicode (Greek, CJK, emoji, etc.) | The Name input on InitScreen | Human display in the TUI; never sent to CopalVX |
+| **ID** | `project.yaml:id` / registry key | ASCII only — `PROJ-<SLUG>-<DDMMYY>` (+ `_NNN` if the suffix checkbox is set) | `pm.compute_id_and_path()` from the Title | Stable internal handle; survives Title renames |
+| **CopalVX name** | `project.yaml:copalvx.project_name` (or fallback) | ASCII, server-unique | Post-push hook writes it as `project_name`; until that fires, `_cvx_project_name()` falls back to `Path(path).name` (the folder basename, which equals the ID minus the `PROJ-` prefix) | Server-side key for all versions/commits |
+
+Practical consequences:
+- The folder basename **is** the CopalVX name on first auto-push. So whatever
+  `slug_title()` produces from the user's input ends up on the server.
+- The `PROJ-` prefix on the ID is a namespace marker for registry rows; it
+  doesn't decouple the ID from the folder name in any meaningful way today.
+- `[N]` rename (CopalVX TUI or `CopalVXRenameModal` in pm-tui) only renames
+  the **CopalVX name** on the server and updates `project.yaml:copalvx.project_name`
+  — it does not touch the Title or the ID.
+
+The InitScreen shows a live `ID: PROJ-<slug>-<date>  •  CopalVX: <slug>-<date>`
+preview under the Name input so users see what these three will look like
+before submitting.
+
+---
+
 ## Storage
 
 Per-user data lives at:
@@ -253,6 +281,8 @@ See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
 12. **`time_cli._api()` now raises instead of `sys.exit`.** The HTTP client used to call `sys.exit(1)` on `URLError`. After F4 the failure modes are exposed as `ServiceDownError` and `ApiError` so the hidden `shell-trigger` handler can render a toast notification. CLI handlers (`cmd_start`, `cmd_stop`) are wrapped in the `_exit_on_service_error` decorator to keep the original exit-on-error behavior. `cmd_status` catches both exceptions directly and prints a soft "service not running" line — same UX as before. Any new caller of `_api()` from outside the CLI surface must handle these two exception types.
 
 13. **macOS `.workflow` XML is hostile to hand-rolling.** The first F4 cut generated `document.wflow` programmatically from a small Python f-string. `pbs` registered the Service and Finder showed the menu item, but clicking did nothing — `WorkflowServiceRunner` would crash with `'Workflow's metaData should be service metaData!'` at `AMWorkflowServiceRunner.m:330`. The runtime expects `workflowMetaData` to look like a fully populated `AMServiceMetaData` dict (with `applicationBundleID`, `applicationPath`, `presentationMode`, `serviceApplicationBundleID`, `serviceProcessesInput`, etc.) and the action dict to carry the full `arguments` mapping that Automator emits. We now ship templates captured from a real Automator-saved Quick Action and substitute only the menu title + the shell command. If you need to update the templates, build a fresh Quick Action in Automator on a Mac and copy `document.wflow` / `Info.plist` over the existing files; do not hand-tune.
+
+14. **Project name slugs transliterate non-ASCII letters via `unidecode`.** `pm._to_ascii()` (called first by both `slug_title()` and `make_slug()`) folds Greek `Κ` → `K`, Cyrillic `П` → `P`, accented Latin `é` → `e`, CJK → its standard romanization, etc. The original cut stripped *everything* outside `[A-Za-z0-9\-_]`, which silently deleted the user's Greek title `Κατάρρευση τιμών έως -40%` and left just `-40` (from `-40%`). With the date suffix that gave a folder named `-40-140526`; the post-push hook then sent `-40-140526` as the CopalVX project name, and because the receiving subprocess uses `argparse.parse_known_args`, the leading `-` was interpreted as a flag — shifting positionals so subsequent pulls reported `No remembered location for project 'v1.0'`. **Principle:** letters get *replaced* (romanized), symbols may be *truncated* — so the slug pipeline always produces a readable, ASCII-only, dash-safe string. `slug_title()`/`make_slug()` also `.strip("-_")` at the end as belt-and-braces protection against degenerate inputs (`"---Hello---"` → `"HELLO"`). `InitScreen._do_create()` additionally rejects names whose slug comes back empty (emoji-only / pure-symbol input) with a `"Please use a name with at least one letter or digit."` toast — the form shows a live preview of the resulting ID + CopalVX name as the user types. If you ever swap out the transliteration library, keep the principle: any change that reverts to "strip non-ASCII" will reintroduce the regression.
 
 ---
 
