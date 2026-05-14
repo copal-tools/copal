@@ -678,12 +678,14 @@ def list_projects(
         {
             "name": r[0],
             "created_at": r[1].isoformat() if r[1] else None,
-            "version_count": r[2],
-            "author_count": r[3],
+            "version_count": int(r[2]) if r[2] is not None else 0,
+            "author_count": int(r[3]) if r[3] is not None else 0,
             "last_push": r[4].isoformat() if r[4] else None,
             "latest_version": r[5],
             "last_author": r[6],
-            "total_storage_bytes": r[7],
+            # PostgreSQL SUM(BIGINT) returns NUMERIC → SQLAlchemy → Decimal.
+            # json.dumps() can't serialize Decimal natively; coerce to int.
+            "total_storage_bytes": int(r[7]) if r[7] is not None else 0,
         }
         for r in rows
     ]
