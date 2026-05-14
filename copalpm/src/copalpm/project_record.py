@@ -22,6 +22,8 @@ from pathlib import Path
 import yaml
 
 from copalpm.config import SESSIONS_LOG, DATA_DIR
+from copalpm.pm import load_registry
+from copalpm.project_doctor import find_orphan_sessions
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -474,6 +476,17 @@ def cmd_sync_time(args):
     if not SESSIONS_LOG.exists():
         print("No sessions log found. Start tracking time with `copalpm time start`.")
         return
+
+    # Surface orphan sessions (project_ids in the log but not in the registry).
+    # Informational only — we keep going and finish the sync for `project_id`.
+    orphans = find_orphan_sessions(load_registry(), SESSIONS_LOG)
+    for orphan_pid, count in sorted(orphans.items()):
+        plural = "session" if count == 1 else "sessions"
+        print(
+            f"warning: {count} {plural} in sessions.jsonl reference unregistered "
+            f"project {orphan_pid} — run `copalpm project doctor` for details.",
+            file=sys.stderr,
+        )
 
     # Build set of existing session_ids for deduplication
     existing_ids = {
