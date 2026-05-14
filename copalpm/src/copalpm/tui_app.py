@@ -402,7 +402,7 @@ class InitScreen(Screen):
         """Show the user the exact ID and CopalVX project name their input will produce."""
         slug = slug_title(raw_name or "")
         if not slug:
-            return "[yellow]No letters or digits yet[/yellow]"
+            return "[yellow]Add at least one letter or digit (emojis alone don't count)[/yellow]"
         date = datetime.now().strftime("%d%m%y")
         return (
             f"[dim]ID:[/dim] PROJ-{slug}-{date}  "
@@ -444,7 +444,8 @@ class InitScreen(Screen):
         # leading hyphen). See pm._to_ascii and CLAUDE.md gotcha #14.
         if not slug_title(name):
             self.notify(
-                "Please use a name with at least one letter or digit.",
+                "Project name must contain at least one letter or digit "
+                "(emojis alone don't count).",
                 title="Project name", severity="warning",
             )
             self.query_one("#name-input", Input).focus()

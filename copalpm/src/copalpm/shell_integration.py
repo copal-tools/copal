@@ -134,13 +134,15 @@ def _require_admin_or_explain(action: str) -> bool:
     print(f"error: `copalpm shell-integration {action}` needs Administrator rights.",
           file=sys.stderr)
     print("",  file=sys.stderr)
-    print("Why: Windows 11 24H2/25H2 silently filters per-user shell verbs added",
+    print("Right-click menu shortcuts must be registered system-wide on Windows —",
           file=sys.stderr)
-    print("after the OS upgrade. Verbs must live in HKLM, which requires admin.",
+    print("that's a Windows requirement, not a Copal one. They can't be installed",
           file=sys.stderr)
+    print("as a regular user.", file=sys.stderr)
     print("",  file=sys.stderr)
-    print("Run from an elevated terminal:", file=sys.stderr)
-    print("  Win+X → Terminal (Admin), then re-run the same command.", file=sys.stderr)
+    print("To proceed:", file=sys.stderr)
+    print("  1. Press Win+X and pick \"Terminal (Admin)\".", file=sys.stderr)
+    print("  2. Re-run the same command from that elevated terminal.", file=sys.stderr)
     return False
 
 

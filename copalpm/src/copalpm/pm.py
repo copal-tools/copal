@@ -267,6 +267,13 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
 # ── Commands ───────────────────────────────────────────────────────────────────
 
 def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None = None):
+    if not slug_title(name):
+        print(
+            "error: project name must contain at least one letter or digit "
+            "(emojis alone don't count).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     pid, root = compute_id_and_path(name, base_dir, use_increment)
 
     if root.exists() and not use_increment:

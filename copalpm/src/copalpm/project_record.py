@@ -346,8 +346,21 @@ def cmd_set(args):
     # Block readonly fields
     top_key = args.field.split(".")[0]
     if top_key in READONLY_FIELDS:
-        print(f"error: '{top_key}' cannot be set directly. "
-              f"Use dedicated commands (e.g. `copalpm record phase`).", file=sys.stderr)
+        print(f"error: '{top_key}' cannot be set directly.", file=sys.stderr)
+        if top_key == "phase" or top_key == "phase_log":
+            print("       Use `copalpm record phase <name>` to log a phase transition.",
+                  file=sys.stderr)
+        elif top_key == "time_entries":
+            print("       Use `copalpm record sync-time` to import sessions from the tracker.",
+                  file=sys.stderr)
+        elif top_key == "copalvx":
+            print("       The copalvx block is written by `copalpm record copalvx-update`",
+                  file=sys.stderr)
+            print("       (called automatically by the CopalVX push hook).", file=sys.stderr)
+        else:
+            print(f"       '{top_key}' is immutable by design "
+                  "(id, slug, created_at, schema_version, deliverables).",
+                  file=sys.stderr)
         sys.exit(1)
 
     old_value = get_field(record, args.field)
