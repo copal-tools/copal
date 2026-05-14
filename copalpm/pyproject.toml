@@ -38,6 +38,7 @@ build-backend = "hatchling.build"
 packages = ["src/copalpm"]
 
 [tool.hatch.build.targets.wheel.force-include]
+# Ship icons (Win) + Automator workflow templates (macOS) inside the wheel.
 "src/copalpm/assets" = "copalpm/assets"
 
 [tool.uv]

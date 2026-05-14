@@ -82,11 +82,17 @@ def test_win_parents_are_hkcu_relative():
 # ── macOS workflow XML ────────────────────────────────────────────────────────
 
 def test_workflow_xml_parses_as_plist():
+    import plistlib
     binary = Path("/usr/local/bin/copalpm")
     xml = si._mac_workflow_xml(binary, "start")
-    # Must be valid XML — Automator refuses malformed plist.
-    root = ET.fromstring(xml)
-    assert root.tag == "plist"
+    # Must parse as a real plist — Automator's runtime asserts on the structure.
+    parsed = plistlib.loads(xml.encode())
+    assert "actions" in parsed
+    assert "workflowMetaData" in parsed
+    # workflowMetaData must declare itself as a service (the assertion that
+    # tripped up the first hand-rolled XML: "Workflow's metaData should be
+    # service metaData!" at AMWorkflowServiceRunner.m:330).
+    assert parsed["workflowMetaData"]["workflowTypeIdentifier"] == "com.apple.Automator.servicesMenu"
 
 
 def test_workflow_xml_contains_shell_command():
@@ -94,16 +100,26 @@ def test_workflow_xml_contains_shell_command():
     xml = si._mac_workflow_xml(binary, "stop")
     assert "shell-trigger stop --folder" in xml
     assert "/usr/local/bin/copalpm" in xml
+    # The placeholder must be substituted out — leaving it in would make the
+    # workflow shell-exec the literal string "__COPALPM_COMMAND__".
+    assert "__COPALPM_COMMAND__" not in xml
 
 
 def test_info_plist_parses_and_advertises_folder_input():
+    import plistlib
     verb = si.VERBS[0]
     xml = si._mac_info_plist(verb)
-    root = ET.fromstring(xml)
-    assert root.tag == "plist"
-    # Surface-level sanity: the folder-type marker and the menu title are present.
-    assert "public.folder" in xml
-    assert verb["title"] in xml
+    parsed = plistlib.loads(xml.encode())
+    services = parsed["NSServices"]
+    assert len(services) == 1
+    svc = services[0]
+    assert svc["NSMessage"] == "runWorkflowAsService"
+    assert svc["NSSendFileTypes"] == ["public.folder"]
+    assert svc["NSMenuItem"]["default"] == verb["title"]
+    # NSRequiredContext.NSApplicationIdentifier is what scopes the verb to
+    # Finder. Without it, Finder will not invoke the Service.
+    assert svc["NSRequiredContext"]["NSApplicationIdentifier"] == "com.apple.finder"
+    assert "__MENU_TITLE__" not in xml
 
 
 # ── Bundle paths ──────────────────────────────────────────────────────────────

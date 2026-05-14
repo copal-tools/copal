@@ -125,10 +125,16 @@ Footprint:
   space inside a folder). Per-user, no admin elevation. Two contexts × three
   verbs = 6 parent keys. Each key carries a menu title, an `Icon` value
   pointing at `src/copalpm/assets/copal-*.ico`, and a `command` subkey.
-- **macOS:** `.workflow` bundles in `~/Library/Services/`. Each bundle's
-  `document.wflow` runs a single bash command: `<copalpm> shell-trigger <verb>
-  --folder "$1"`. Install/uninstall runs `pbs -flush` so Finder picks up
-  changes immediately.
+- **macOS:** `.workflow` bundles in `~/Library/Services/`. The XML for both
+  `Info.plist` and `document.wflow` is generated from templates shipped at
+  `src/copalpm/assets/macos_workflow/{Info.plist.template,document.wflow.template}`
+  by substituting `__MENU_TITLE__` and `__COPALPM_COMMAND__` placeholders.
+  The templates were captured from a real Automator-generated Quick Action —
+  do **not** edit by hand. `AMWorkflowServiceRunner` aborts at runtime if the
+  `workflowMetaData` structure isn't a recognized `AMServiceMetaData` shape
+  (the Service appears in the Finder menu but clicking it silently does
+  nothing — see gotcha #13). Install/uninstall runs `pbs -flush` so Finder
+  picks up changes immediately.
 
 The "New Project Here" verb spawns `copalpm tui --screen init --dir <folder>`
 detached from the parent process; the TUI's `PMApp` accepts `initial_screen`
@@ -205,6 +211,8 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 11. **Explorer caches the right-click menu.** After `copalpm shell-integration install`, the new verbs may not appear until Explorer is restarted (`taskkill /F /IM explorer.exe && start explorer.exe` is the fast path; signing out works too). Same gotcha applies in reverse for uninstall — stale entries can linger. The Finder `pbs -flush` call in the macOS installer makes the equivalent issue invisible on the Mac.
 
 12. **`time_cli._api()` now raises instead of `sys.exit`.** The HTTP client used to call `sys.exit(1)` on `URLError`. After F4 the failure modes are exposed as `ServiceDownError` and `ApiError` so the hidden `shell-trigger` handler can render a toast notification. CLI handlers (`cmd_start`, `cmd_stop`) are wrapped in the `_exit_on_service_error` decorator to keep the original exit-on-error behavior. `cmd_status` catches both exceptions directly and prints a soft "service not running" line — same UX as before. Any new caller of `_api()` from outside the CLI surface must handle these two exception types.
+
+13. **macOS `.workflow` XML is hostile to hand-rolling.** The first F4 cut generated `document.wflow` programmatically from a small Python f-string. `pbs` registered the Service and Finder showed the menu item, but clicking did nothing — `WorkflowServiceRunner` would crash with `'Workflow's metaData should be service metaData!'` at `AMWorkflowServiceRunner.m:330`. The runtime expects `workflowMetaData` to look like a fully populated `AMServiceMetaData` dict (with `applicationBundleID`, `applicationPath`, `presentationMode`, `serviceApplicationBundleID`, `serviceProcessesInput`, etc.) and the action dict to carry the full `arguments` mapping that Automator emits. We now ship templates captured from a real Automator-saved Quick Action and substitute only the menu title + the shell command. If you need to update the templates, build a fresh Quick Action in Automator on a Mac and copy `document.wflow` / `Info.plist` over the existing files; do not hand-tune.
 
 ---
 
