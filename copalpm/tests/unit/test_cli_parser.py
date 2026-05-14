@@ -253,6 +253,132 @@ def test_service_status():
     assert args.cmd == "status"
 
 
+# ── `setup` / `teardown` umbrella commands ────────────────────────────────────
+
+def test_setup_default():
+    args = _parse(["setup"])
+    assert args.group == "setup"
+    assert args.service_only is False
+    assert args.shell_only is False
+    assert args.skip_service is False
+    assert args.skip_shell is False
+
+
+def test_setup_service_only():
+    args = _parse(["setup", "--service-only"])
+    assert args.service_only is True
+    assert args.shell_only is False
+
+
+def test_setup_shell_only():
+    args = _parse(["setup", "--shell-only"])
+    assert args.shell_only is True
+    assert args.service_only is False
+
+
+def test_setup_service_and_shell_only_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        _parse(["setup", "--service-only", "--shell-only"])
+
+
+def test_setup_skip_flags():
+    args = _parse(["setup", "--skip-service"])
+    assert args.skip_service is True
+    args = _parse(["setup", "--skip-shell"])
+    assert args.skip_shell is True
+
+
+def test_teardown_default():
+    args = _parse(["teardown"])
+    assert args.group == "teardown"
+
+
+def test_teardown_with_skip_flags():
+    args = _parse(["teardown", "--skip-shell"])
+    assert args.skip_shell is True
+
+
+# ── `shell-integration` group ─────────────────────────────────────────────────
+
+def test_shell_integration_install():
+    args = _parse(["shell-integration", "install"])
+    assert args.group == "shell-integration" and args.cmd == "install"
+
+
+def test_shell_integration_uninstall():
+    args = _parse(["shell-integration", "uninstall"])
+    assert args.cmd == "uninstall"
+
+
+def test_shell_integration_status():
+    args = _parse(["shell-integration", "status"])
+    assert args.cmd == "status"
+
+
+def test_shell_integration_requires_subcommand():
+    with pytest.raises(SystemExit):
+        _parse(["shell-integration"])
+
+
+# ── `shell-trigger` (hidden) group ────────────────────────────────────────────
+
+def test_shell_trigger_start_parseable():
+    args = _parse(["shell-trigger", "start", "--folder", "C:/projects/Foo"])
+    assert args.group == "shell-trigger"
+    assert args.trigger == "start"
+    assert args.folder == "C:/projects/Foo"
+
+
+def test_shell_trigger_stop_parseable():
+    args = _parse(["shell-trigger", "stop", "--folder", "/tmp/p"])
+    assert args.trigger == "stop"
+
+
+def test_shell_trigger_new_project_parseable():
+    args = _parse(["shell-trigger", "new-project", "--folder", "/tmp/p"])
+    assert args.trigger == "new-project"
+
+
+def test_shell_trigger_rejects_unknown_trigger():
+    with pytest.raises(SystemExit):
+        _parse(["shell-trigger", "bogus", "--folder", "/tmp"])
+
+
+def test_shell_trigger_requires_folder():
+    with pytest.raises(SystemExit):
+        _parse(["shell-trigger", "start"])
+
+
+def test_shell_trigger_hidden_from_help(capsys):
+    """`shell-trigger` is an internal verb handler and should not appear in --help."""
+    with pytest.raises(SystemExit):
+        _parse(["--help"])
+    out = capsys.readouterr().out
+    assert "shell-trigger" not in out, (
+        "shell-trigger subcommand is leaking into --help output."
+    )
+
+
+# ── `tui` group with new deep-link flags ─────────────────────────────────────
+
+def test_tui_default_no_screen():
+    args = _parse(["tui"])
+    assert args.group == "tui"
+    assert args.screen is None
+    assert args.dir is None
+
+
+def test_tui_screen_init_with_dir():
+    args = _parse(["tui", "--screen", "init", "--dir", "C:/projects/Foo"])
+    assert args.screen == "init"
+    assert args.dir == "C:/projects/Foo"
+
+
+def test_tui_screen_rejects_unknown():
+    with pytest.raises(SystemExit):
+        _parse(["tui", "--screen", "dashboard"])
+
+
 # ── `deliver` group ───────────────────────────────────────────────────────────
 
 def test_deliver_requires_path():

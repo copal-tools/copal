@@ -310,10 +310,11 @@ class InitScreen(Screen):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, initial_dir: str | None = None) -> None:
         super().__init__()
-        self._preset_index = 0  # 0=Custom, 1..N=template index
-        self._templates    = load_templates()
+        self._preset_index  = 0  # 0=Custom, 1..N=template index
+        self._templates     = load_templates()
+        self._initial_dir   = initial_dir
 
     def compose(self) -> ComposeResult:
         with Vertical(id="init-box"):
@@ -363,7 +364,7 @@ class InitScreen(Screen):
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#dir-input", Input).value = self._default_dir()
+        self.query_one("#dir-input", Input).value = self._initial_dir or self._default_dir()
         self.query_one("#name-input", Input).focus()
 
     @staticmethod
@@ -1924,6 +1925,12 @@ class ProjectDetailScreen(Screen):
 
 class PMApp(App):
     TITLE = "PM"
+
+    def __init__(self, initial_screen: str | None = None, initial_dir: str | None = None) -> None:
+        super().__init__()
+        self._initial_screen = initial_screen
+        self._initial_dir    = initial_dir
+
     CSS = """
     Screen {
         background: $surface;
@@ -1960,10 +1967,12 @@ class PMApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(DashboardScreen())
+        if self._initial_screen == "init":
+            self.push_screen(InitScreen(initial_dir=self._initial_dir))
 
 
-def main() -> None:
-    PMApp().run()
+def main(initial_screen: str | None = None, initial_dir: str | None = None) -> None:
+    PMApp(initial_screen=initial_screen, initial_dir=initial_dir).run()
 
 
 if __name__ == "__main__":

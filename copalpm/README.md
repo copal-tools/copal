@@ -22,8 +22,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 # 3. Install CopalPM
 uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalpm"
 
-# 4. Install and start the background time-tracking service
-copalpm service install
+# 4. One-shot setup: background service + Finder Quick Actions
+copalpm setup
 ```
 
 ### Windows
@@ -35,12 +35,19 @@ winget install astral-sh.uv
 # 2. Install CopalPM
 uv tool install "git+https://github.com/copal-tools/copal.git#subdirectory=copalpm"
 
-# 3. Install NSSM (required for the time-tracking service)
-winget install NSSM.NSSM
-
-# 4. Install and start the background time-tracking service (Admin PowerShell)
-copalpm service install
+# 3. From an elevated terminal (Win+X -> Terminal (Admin)):
+#    one-shot setup installs NSSM via winget, the background service,
+#    and the Explorer right-click verbs.
+copalpm setup
 ```
+
+`copalpm setup` is idempotent — safe to re-run. It will skip whatever is
+already in place. Reverse with `copalpm teardown` (also idempotent; user data
+in `%APPDATA%\copalpm\` / `~/.config/copalpm/` is preserved).
+
+For partial installs, `copalpm setup --service-only` or `--shell-only` skips
+the other half. The granular `copalpm service install` and
+`copalpm shell-integration install` commands remain available for advanced use.
 
 ### Update
 
@@ -81,6 +88,10 @@ copalpm service install            # install task-tracker background service
 copalpm service uninstall          # remove the service
 copalpm service status             # service state
 
+copalpm shell-integration install   # add Copal verbs to right-click menus
+copalpm shell-integration uninstall # remove the OS shell verbs
+copalpm shell-integration status    # show installed verbs
+
 copalpm deliver <path> [...]       # log a delivered asset
 ```
 
@@ -97,6 +108,43 @@ copalpm service install      # install + start
 copalpm service uninstall    # stop + remove
 copalpm service status       # is the service running?
 ```
+
+---
+
+## Explorer / Finder integration (optional)
+
+Add three right-click verbs to your file manager so you can start a timer,
+stop a timer, or start a new project without leaving the OS shell:
+
+```bash
+copalpm shell-integration install     # add the verbs
+copalpm shell-integration status      # show what's installed
+copalpm shell-integration uninstall   # remove them
+```
+
+The verbs work on any folder:
+
+- **Copal: Start Timer** — starts a time session against the project whose
+  `project.yaml` lives at or above the selected folder. Toast notification on
+  success; if the background service isn't running, you'll see an error
+  pointing at `copalpm service install`.
+- **Copal: Stop Timer** — stops the current session.
+- **Copal: New Project Here** — opens the CopalPM TUI directly on its
+  New Project screen with the folder pre-filled.
+
+**macOS:** per-user install, no sudo required. The entries appear under
+the Services menu (or right-click → Quick Actions).
+
+**Windows:** install/uninstall need an **elevated terminal** (Win+X →
+"Terminal (Admin)" → re-run the command). Status reads work as any user.
+
+The verbs are written to HKLM because Windows 11 24H2/25H2 silently
+filters per-user (HKCU) shell verbs added after the OS upgrade —
+verified by side-by-side test. They only appear in the *legacy*
+context menu: **Shift+right-click** on a folder, or right-click →
+**"Show more options"** at the bottom of the modern menu. If they
+still don't show, restart Explorer:
+`taskkill /F /IM explorer.exe & start explorer.exe`.
 
 ---
 

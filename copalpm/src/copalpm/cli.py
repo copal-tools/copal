@@ -5,13 +5,17 @@
 # tui_app.py) and expose `cmd_*` functions that accept an argparse Namespace.
 #
 # Top-level subcommand groups:
-#   tui            — launch the TUI (also the default when no args given)
-#   project        — registry operations (init/list/status/register/scan/remove/rollup)
-#   record         — project.yaml operations (show/get/set/phase/validate/sync-time/copalvx-update)
-#   time           — time tracking (start/stop/status/log)
-#   service        — task-tracker background service (install/uninstall/status)
-#   deliver        — log a delivered asset
-#   task-tracker   — daemon entry point (hidden; invoked by the OS service)
+#   tui                — launch the TUI (also the default when no args given)
+#   setup              — one-shot install of service + shell integration
+#   teardown           — reverse of setup (remove service + shell verbs)
+#   project            — registry operations (init/list/status/register/scan/remove/rollup)
+#   record             — project.yaml operations (show/get/set/phase/validate/sync-time/copalvx-update)
+#   time               — time tracking (start/stop/status/log)
+#   service            — task-tracker background service (install/uninstall/status)
+#   shell-integration  — Explorer / Finder right-click verbs (install/uninstall/status)
+#   deliver            — log a delivered asset
+#   task-tracker       — daemon entry point (hidden; invoked by the OS service)
+#   shell-trigger      — handler invoked by the OS shell verbs (hidden)
 
 import argparse
 import sys
@@ -49,6 +53,13 @@ from .time_cli import cmd_status as cmd_time_status
 from .deliver_cli import cmd_deliver
 from .task_tracker import main as run_task_tracker
 from .tui_app import main as run_tui
+from .shell_integration import (
+    cmd_shell_install,
+    cmd_shell_uninstall,
+    cmd_shell_status,
+    cmd_shell_trigger,
+)
+from .setup_cmd import cmd_setup, cmd_teardown
 
 
 # ── Parser construction ───────────────────────────────────────────────────────
@@ -61,7 +72,40 @@ def _build_parser() -> argparse.ArgumentParser:
     groups = ap.add_subparsers(dest="group", metavar="<group>")
 
     # tui ───────────────────────────────────────────────────────────────────
-    groups.add_parser("tui", help="Launch the TUI dashboard (default)")
+    p_tui = groups.add_parser("tui", help="Launch the TUI dashboard (default)")
+    p_tui.add_argument("--screen", choices=["init"], default=None,
+                       help="Open the TUI directly on a specific screen")
+    p_tui.add_argument("--dir", metavar="PATH", default=None,
+                       help="With --screen init, pre-fill the project folder")
+
+    # setup / teardown ──────────────────────────────────────────────────────
+    p_setup = groups.add_parser(
+        "setup",
+        help="One-shot install of the background service and shell integration",
+    )
+    setup_skip = p_setup.add_mutually_exclusive_group()
+    setup_skip.add_argument("--service-only", action="store_true",
+                            help="Install only the background service")
+    setup_skip.add_argument("--shell-only", action="store_true",
+                            help="Install only the right-click shell integration")
+    p_setup.add_argument("--skip-service", action="store_true",
+                         help="Skip the background-service step")
+    p_setup.add_argument("--skip-shell", action="store_true",
+                         help="Skip the shell-integration step")
+
+    p_teardown = groups.add_parser(
+        "teardown",
+        help="Reverse of setup (remove service and shell integration)",
+    )
+    teardown_skip = p_teardown.add_mutually_exclusive_group()
+    teardown_skip.add_argument("--service-only", action="store_true",
+                               help="Remove only the background service")
+    teardown_skip.add_argument("--shell-only", action="store_true",
+                               help="Remove only the right-click shell integration")
+    p_teardown.add_argument("--skip-service", action="store_true",
+                            help="Skip the background-service step")
+    p_teardown.add_argument("--skip-shell", action="store_true",
+                            help="Skip the shell-integration step")
 
     # project ────────────────────────────────────────────────────────────────
     p_proj = groups.add_parser("project", help="Project registry operations")
@@ -147,6 +191,17 @@ def _build_parser() -> argparse.ArgumentParser:
     s_svc.add_parser("uninstall", help="Stop and remove the task-tracker service")
     s_svc.add_parser("status", help="Show service state and current open session")
 
+    # shell-integration ──────────────────────────────────────────────────────
+    p_shell = groups.add_parser(
+        "shell-integration",
+        help="Install Explorer / Finder right-click verbs",
+    )
+    s_shell = p_shell.add_subparsers(dest="cmd", required=True, metavar="<cmd>")
+    s_shell.add_parser("install",
+                       help="Add Copal verbs to the OS shell (Win HKCU / Mac Quick Actions)")
+    s_shell.add_parser("uninstall", help="Remove the Copal verbs from the OS shell")
+    s_shell.add_parser("status", help="Show which Copal verbs are currently installed")
+
     # deliver ────────────────────────────────────────────────────────────────
     p_del = groups.add_parser("deliver", help="Log a delivered asset into project.yaml")
     p_del.add_argument("path",
@@ -167,8 +222,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # subparser from the subparsers action's _choices_actions list after the
     # parser tree is built. The subcommand still parses and dispatches normally.
     groups.add_parser("task-tracker", help=argparse.SUPPRESS)
+
+    # shell-trigger (hidden — invoked by the OS shell verbs) ────────────────
+    p_strg = groups.add_parser("shell-trigger", help=argparse.SUPPRESS)
+    p_strg.add_argument("trigger", choices=["start", "stop", "new-project"])
+    p_strg.add_argument("--folder", required=True, metavar="PATH")
+
     groups._choices_actions = [
-        a for a in groups._choices_actions if a.dest != "task-tracker"
+        a for a in groups._choices_actions
+        if a.dest not in ("task-tracker", "shell-trigger")
     ]
 
     return ap
@@ -185,7 +247,9 @@ def main():
 
     # No group given → launch TUI (the most common entry point)
     if args.group is None or args.group == "tui":
-        return run_tui()
+        screen = getattr(args, "screen", None)
+        directory = getattr(args, "dir", None)
+        return run_tui(initial_screen=screen, initial_dir=directory)
 
     if args.group == "task-tracker":
         return run_task_tracker()
@@ -239,6 +303,23 @@ def main():
             return cmd_uninstall_service()
         if args.cmd == "status":
             return cmd_service_status()
+
+    if args.group == "shell-integration":
+        dispatch = {
+            "install":   cmd_shell_install,
+            "uninstall": cmd_shell_uninstall,
+            "status":    cmd_shell_status,
+        }
+        return dispatch[args.cmd](args)
+
+    if args.group == "shell-trigger":
+        return cmd_shell_trigger(args)
+
+    if args.group == "setup":
+        return cmd_setup(args)
+
+    if args.group == "teardown":
+        return cmd_teardown(args)
 
     # Unreachable — argparse rejects unknown groups before we get here
     ap.error(f"unknown group: {args.group}")
