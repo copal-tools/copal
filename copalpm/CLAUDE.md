@@ -120,11 +120,13 @@ subcommand — that indirection keeps the OS-level command strings stable as the
 underlying implementation evolves. Source: `shell_integration.py`.
 
 Footprint:
-- **Windows:** HKCU keys under `Software\Classes\Directory\shell\Copal*` (folder
+- **Windows:** HKLM keys under `Software\Classes\Directory\shell\Copal*` (folder
   selected) and `Software\Classes\Directory\Background\shell\Copal*` (empty
-  space inside a folder). Per-user, no admin elevation. Two contexts × three
-  verbs = 6 parent keys. Each key carries a menu title, an `Icon` value
-  pointing at `src/copalpm/assets/copal-*.ico`, and a `command` subkey.
+  space inside a folder). Two contexts × three verbs = 6 parent keys. Each key
+  carries a menu title, an `Icon` value pointing at `src/copalpm/assets/copal-*.ico`,
+  and a `command` subkey. **Install/uninstall need admin elevation** — see
+  gotcha #11 for why HKCU isn't viable on Win11 24H2+. Status is read-only
+  and works for any user.
 - **macOS:** `.workflow` bundles in `~/Library/Services/`. The XML for both
   `Info.plist` and `document.wflow` is generated from templates shipped at
   `src/copalpm/assets/macos_workflow/{Info.plist.template,document.wflow.template}`
@@ -208,7 +210,7 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
 10. **The `📁` folder picker on InitScreen requires `textual-fspicker`.** Adding new path inputs anywhere in the TUI? Use the same pattern — `Horizontal(Input, Button("📁"))` with a button handler that calls `self.app.push_screen(SelectDirectory(<start>), <callback>)`. The picker's starting location walks up the filesystem to the nearest existing path; absent that, it falls back to `Path.home()`. See `InitScreen._open_dir_picker` for the canonical implementation.
 
-11. **Explorer caches the right-click menu.** After `copalpm shell-integration install`, the new verbs may not appear until Explorer is restarted (`taskkill /F /IM explorer.exe && start explorer.exe` is the fast path; signing out works too). Same gotcha applies in reverse for uninstall — stale entries can linger. The Finder `pbs -flush` call in the macOS installer makes the equivalent issue invisible on the Mac.
+11. **Windows 11 24H2/25H2 silently filters per-user shell verbs.** The first cut wrote verbs to `HKCU\Software\Classes\Directory(\Background)\shell\…` — works on Win10 and pre-24H2 Win11, doesn't work on Win11 build 26200+. Verified by side-by-side test: an HKLM-registered minimal verb appeared in the legacy menu, an HKCU one with identical structure (same default value, same ACL, same parent class) did not. Pre-existing HKCU verbs (e.g. Anchorpoint installed before the OS upgrade) are grandfathered in; new HKCU writes after the upgrade are filtered. The fix is to write to HKLM, which requires admin (`copalpm shell-integration install` checks `IsUserAnAdmin()` and prints clear instructions if not elevated). `_uninstall_windows()` only requires admin if there are HKLM keys to remove — keeping the cleanup of stale HKCU entries from older installs admin-free. Verbs only appear in the *legacy* context menu — Shift+right-click, or right-click → "Show more options"; the modern menu requires an IExplorerCommand COM extension which is out of scope for F4. Explorer also caches verb visibility per-user; if newly installed verbs don't show, `taskkill /F /IM explorer.exe & start explorer.exe` (or sign out / sign in for the most stubborn cases). The Finder `pbs -flush` call in the macOS installer makes the equivalent issue invisible on the Mac.
 
 12. **`time_cli._api()` now raises instead of `sys.exit`.** The HTTP client used to call `sys.exit(1)` on `URLError`. After F4 the failure modes are exposed as `ServiceDownError` and `ApiError` so the hidden `shell-trigger` handler can render a toast notification. CLI handlers (`cmd_start`, `cmd_stop`) are wrapped in the `_exit_on_service_error` decorator to keep the original exit-on-error behavior. `cmd_status` catches both exceptions directly and prints a soft "service not running" line — same UX as before. Any new caller of `_api()` from outside the CLI surface must handle these two exception types.
 

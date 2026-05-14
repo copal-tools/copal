@@ -125,9 +125,19 @@ The verbs work on any folder:
 - **Copal: New Project Here** — opens the CopalPM TUI directly on its
   New Project screen with the folder pre-filled.
 
-Per-user install — no admin / sudo required. On Windows the entries live
-in HKCU and may not appear until Explorer is restarted. On macOS the
-entries appear under the Services menu (or right-click → Quick Actions).
+**macOS:** per-user install, no sudo required. The entries appear under
+the Services menu (or right-click → Quick Actions).
+
+**Windows:** install/uninstall need an **elevated terminal** (Win+X →
+"Terminal (Admin)" → re-run the command). Status reads work as any user.
+
+The verbs are written to HKLM because Windows 11 24H2/25H2 silently
+filters per-user (HKCU) shell verbs added after the OS upgrade —
+verified by side-by-side test. They only appear in the *legacy*
+context menu: **Shift+right-click** on a folder, or right-click →
+**"Show more options"** at the bottom of the modern menu. If they
+still don't show, restart Explorer:
+`taskkill /F /IM explorer.exe & start explorer.exe`.
 
 ---
 

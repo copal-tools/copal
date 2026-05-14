@@ -105,10 +105,43 @@ def _notify_macos(title: str, message: str) -> None:
 
 # ── Windows: install / uninstall / status ─────────────────────────────────────
 
+# Verbs live under HKLM, not HKCU. Win11 24H2/25H2 (build 26200+) silently
+# filters per-user shell verbs added after the OS upgrade — confirmed by
+# building an HKLM test verb that DID appear in the menu while an identical
+# HKCU verb did not. Anchorpoint and other working HKCU verbs were
+# grandfathered in by being present at upgrade time. New installs need HKLM.
+# Cost: install/uninstall now require admin elevation (UAC prompt). Status
+# is read-only and works as any user.
 _WIN_PARENTS = (
     r"Software\Classes\Directory\shell",
     r"Software\Classes\Directory\Background\shell",
 )
+
+
+def _is_admin() -> bool:
+    """True if the current process has Administrator rights on Windows."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _require_admin_or_explain(action: str) -> bool:
+    """Return True if elevated; otherwise print guidance and return False."""
+    if _is_admin():
+        return True
+    print(f"error: `copalpm shell-integration {action}` needs Administrator rights.",
+          file=sys.stderr)
+    print("",  file=sys.stderr)
+    print("Why: Windows 11 24H2/25H2 silently filters per-user shell verbs added",
+          file=sys.stderr)
+    print("after the OS upgrade. Verbs must live in HKLM, which requires admin.",
+          file=sys.stderr)
+    print("",  file=sys.stderr)
+    print("Run from an elevated terminal:", file=sys.stderr)
+    print("  Win+X → Terminal (Admin), then re-run the same command.", file=sys.stderr)
+    return False
 
 
 def _win_command_string(binary: Path, trigger: str, folder_placeholder: str) -> str:
@@ -116,6 +149,9 @@ def _win_command_string(binary: Path, trigger: str, folder_placeholder: str) -> 
 
 
 def _install_windows() -> int:
+    if not _require_admin_or_explain("install"):
+        return 1
+
     import winreg
 
     binary = _copalpm_bin()
@@ -124,30 +160,72 @@ def _install_windows() -> int:
         placeholder = "%V" if "Background" in parent else "%1"
         for verb in VERBS:
             key_path = f"{parent}\\{verb['id']}"
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+            with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
                 winreg.SetValue(k, "", winreg.REG_SZ, verb["title"])
                 icon = _asset(verb["icon"])
                 if icon.exists():
                     winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, str(icon))
             cmd_path = f"{key_path}\\command"
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, cmd_path) as k:
+            with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, cmd_path) as k:
                 winreg.SetValue(
                     k, "", winreg.REG_SZ,
                     _win_command_string(binary, verb["trigger"], placeholder),
                 )
-    print("Installed Copal right-click verbs (Windows Explorer).")
-    print("If Explorer doesn't show them, sign out / in or restart explorer.exe.")
+    print("Installed Copal right-click verbs to HKLM (system-wide, all users).")
+    print()
+    print("On Windows 11, custom verbs only appear in the legacy context menu:")
+    print("  - Shift+right-click on a folder, OR")
+    print("  - Right-click then 'Show more options' (bottom of the modern menu).")
+    print()
+    print("If verbs still don't appear, restart Explorer:")
+    print("  taskkill /F /IM explorer.exe & start explorer.exe")
     return 0
 
 
 def _uninstall_windows() -> int:
     import winreg
 
-    removed = 0
+    # Probe HKLM first — only require admin if there's actually something
+    # there to remove. Lets users clean up stale HKCU entries (from older
+    # installs) without an elevation prompt.
+    has_hklm = False
+    for parent in _WIN_PARENTS:
+        for verb in VERBS:
+            try:
+                winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{parent}\\{verb['id']}").Close()
+                has_hklm = True
+                break
+            except FileNotFoundError:
+                continue
+        if has_hklm:
+            break
+
+    if has_hklm and not _require_admin_or_explain("uninstall"):
+        return 1
+
+    removed_hklm = 0
+    if has_hklm:
+        for parent in _WIN_PARENTS:
+            for verb in VERBS:
+                base = f"{parent}\\{verb['id']}"
+                for sub in ("command",):
+                    try:
+                        winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, f"{base}\\{sub}")
+                    except FileNotFoundError:
+                        pass
+                try:
+                    winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, base)
+                    removed_hklm += 1
+                except FileNotFoundError:
+                    pass
+
+    # Always clean up any stale HKCU keys from pre-HKLM-pivot installs.
+    # Even on Win11 24H2+ where they don't show in Explorer, they're clutter.
+    # HKCU writes don't need admin.
+    removed_hkcu = 0
     for parent in _WIN_PARENTS:
         for verb in VERBS:
             base = f"{parent}\\{verb['id']}"
-            # Delete command subkey first; HKCU DeleteKey requires no subkeys.
             for sub in ("command",):
                 try:
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, f"{base}\\{sub}")
@@ -155,10 +233,19 @@ def _uninstall_windows() -> int:
                     pass
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base)
-                removed += 1
+                removed_hkcu += 1
             except FileNotFoundError:
                 pass
-    print(f"Removed {removed} Copal verb key(s) from HKCU.")
+
+    parts = []
+    if removed_hklm:
+        parts.append(f"{removed_hklm} from HKLM")
+    if removed_hkcu:
+        parts.append(f"{removed_hkcu} stale from HKCU")
+    if not parts:
+        print("No Copal verb keys found.")
+    else:
+        print(f"Removed {' + '.join(parts)} Copal verb key(s).")
     return 0
 
 
@@ -170,11 +257,11 @@ def _status_windows() -> int:
         for verb in VERBS:
             key_path = f"{parent}\\{verb['id']}"
             try:
-                winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path).Close()
+                winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path).Close()
                 state = "installed"
             except FileNotFoundError:
                 state = "missing"
-            print(f"  {state:>9}  HKCU\\{key_path}")
+            print(f"  {state:>9}  HKLM\\{key_path}")
     return 0
 
 
