@@ -43,7 +43,7 @@ copalpm setup
 
 `copalpm setup` is idempotent — safe to re-run. It will skip whatever is
 already in place. Reverse with `copalpm teardown` (also idempotent; user data
-in `%APPDATA%\copalpm\` / `~/.config/copalpm/` is preserved).
+is preserved — see [Where your data lives](#where-your-data-lives)).
 
 For partial installs, `copalpm setup --service-only` or `--shell-only` skips
 the other half. The granular `copalpm service install` and
@@ -164,20 +164,93 @@ You can also push/pull from the CopalPM TUI directly (project detail screen → 
 
 ---
 
-## Storage
+## Three identifiers (Title vs ID vs CopalVX name)
 
-User data lives under:
+Every project carries three names that serve different audiences and *can*
+drift apart. The InitScreen shows a live preview (`ID: PROJ-<slug>-<date>  •
+CopalVX: <slug>-<date>`) so you see all three before submitting.
 
-- macOS / Linux: `~/.config/copalpm/`
-- Windows: `%APPDATA%\copalpm\`
+| Name | Where it lives | Charset | Used for |
+|------|----------------|---------|----------|
+| **Title** | `project.yaml:name` and `name` in `registry.json` | Any Unicode (Greek, CJK, emoji) | Human display in the TUI; never sent to a server |
+| **ID** | `project.yaml:id` and the registry key | ASCII only — `PROJ-<SLUG>-<DDMMYY>` (+ `_NNN` if the suffix box is ticked) | Stable internal handle; survives Title renames |
+| **CopalVX name** | `project.yaml:copalvx.project_name` (post-push); folder basename until the first push | ASCII, server-unique | Server-side key for every version pushed via CopalVX |
 
-> **Upgrading from a pre-rebrand install?** On first run, any data in `project-registry/` is automatically copied to `copalpm/`. The old directory is preserved as a backup — delete it manually once you've verified everything works. If the task-tracker service was running during the upgrade, restart it (`copalpm service uninstall && copalpm service install`) so it picks up the new path.
+Practical consequences:
+- The folder basename **is** the CopalVX name on the first auto-push, so
+  whatever the slug pipeline produces from your Title ends up on the server.
+- Renaming on the CopalVX side (`[N]` in either TUI) updates only the
+  CopalVX name — the Title and ID stay put.
+- Non-ASCII Titles (e.g. Greek, CJK, accented Latin) are transliterated via
+  `unidecode` before hitting the slug; pure-emoji Titles are rejected with a
+  toast because they slug to nothing.
 
-Contents:
+---
+
+## Where your data lives
+
+CopalPM and CopalVX each have their own per-user config directory. They are
+**separate** — there's no shared file:
+
+| Tool | macOS / Linux | Windows | What's in it |
+|------|---------------|---------|--------------|
+| **CopalPM** | `~/.config/copalpm/` | `%APPDATA%\copalpm\` | Project registry, session log, templates, service config |
+| **CopalVX** | `~/.copal/config.json` | `%USERPROFILE%\.copal\config.json` | Server IP/port, client path, remembered pull destinations (`projects.json`) |
+
+CopalPM's directory contents:
 - `registry.json` — list of registered projects
 - `sessions.jsonl` — append-only session log
+- `current_session.json` — currently-running session (if any)
 - `templates.json` — user-defined project templates
 - `config.json` — service config (port, API key)
+
+`copalpm teardown` removes the service and shell verbs but leaves both
+directories untouched. To wipe CopalPM data, delete the directory above; to
+wipe CopalVX client data, delete `~/.copal/`.
+
+### Upgrading from a pre-rebrand install
+
+CopalPM was renamed from `ProjectRegistry` in May 2026. The first time you
+import or run `copalpm` after upgrading, the old `project-registry/` directory
+(if present) is auto-copied into `copalpm/`. Specifically:
+
+- The migration runs at module import time, on the first run after upgrade.
+- A marker file `.migrated_from_project-registry` is dropped into the new
+  directory recording when and from where.
+- The old `project-registry/` directory is **preserved as a backup** — delete
+  it manually once you've verified everything works.
+- If the task-tracker service was already running during the upgrade, **restart
+  it** so it picks up the new path:
+
+  ```bash
+  copalpm service uninstall && copalpm service install
+  ```
+
+This migration shim is scheduled for removal in the Phase 5 cleanup; if you
+upgrade after that, you'll need to copy the directory manually if you skipped
+this window.
+
+---
+
+## Timezone behavior
+
+CopalPM mixes two time conventions, which matters for distributed teams:
+
+- **Sessions** (`sessions.jsonl`, `time_entries`, `current_session.json`) are
+  stored in **UTC**. Both `copalpm time start/stop` and `copalpm time log`
+  timestamp with `datetime.now(timezone.utc)`.
+- **Deadlines** (`project.yaml:deadline`) are stored as plain `YYYY-MM-DD` and
+  parsed at **local midnight**. The "X days remaining" display in
+  `copalpm record show` and the TUI uses your machine's local date.
+
+Practical consequences:
+- Two collaborators in different timezones may see different "days remaining"
+  on the same `YYYY-MM-DD` deadline (e.g. someone in UTC+11 ticks over a day
+  earlier than someone in UTC-8).
+- Session totals are timezone-stable: a session that crosses midnight local
+  time still rolls up cleanly because it's UTC under the hood.
+- If you re-export `time_entries` for invoicing, the UTC timestamps are
+  authoritative — convert to your local zone at the report layer.
 
 ---
 
