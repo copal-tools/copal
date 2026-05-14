@@ -216,6 +216,16 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
 ---
 
+## Working with Claude (CopalPM-specific)
+
+This package's gotchas (data-dir migration, HKLM/Win11 24H2 shell verbs, subprocess encoding, Textual scrollable-form layout) are codified in the `copal-gotcha-reviewer` subagent (defined at [../.claude/agents/copal-gotcha-reviewer.md](../.claude/agents/copal-gotcha-reviewer.md)) — invoke via `/copal-gotcha-check` after any change touching `src/copalpm/shell_integration.py`, `src/copalpm/config.py`, `src/copalpm/copalvx_api.py`, or any new file added under the user-data dir.
+
+For cross-package contract changes (`copalvx_api.py`), run `/copal-cross-package` to verify both sides stay in sync.
+
+See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
+
+---
+
 ## Gotchas
 
 1. **One-time auto-migration from the legacy `project-registry/` data dir.** `config.py:_resolve_data_dir()` runs on every import: if `<base>/copalpm/` doesn't exist but `<base>/project-registry/` does, it `shutil.copytree`s the legacy directory into the new location and writes a `.migrated_from_project-registry` marker (source path + UTC timestamp). The legacy directory is preserved as a backup — users delete it manually once they've verified things work. If the copy fails (permissions, disk full, etc.) the resolver falls back to the legacy directory so the tool stays functional; next run retries. Idempotent: once the new dir exists, the migration code is a no-op. Note: if the task-tracker service was running OLD code during the upgrade, it will keep writing to `project-registry/` while CLI processes use `copalpm/` — users running the daemon must `copalpm service uninstall && copalpm service install` after upgrade.

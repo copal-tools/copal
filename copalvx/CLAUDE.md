@@ -791,6 +791,18 @@ DELETE FROM projects WHERE name = 'TestProjectName';
 
 ---
 
+## Working with Claude (CopalVX-specific)
+
+This package's gotchas are codified in the `copal-gotcha-reviewer` subagent (defined at [../.claude/agents/copal-gotcha-reviewer.md](../.claude/agents/copal-gotcha-reviewer.md)) — invoke via `/copal-gotcha-check` after any change touching `server/app/main.py`, `server/docker-compose.yml`, `client/copal_core/sync.py`, `client/copal_core/transport.py`, or `client/copal_core/pm_hooks.py`.
+
+For a server change, walk through the deploy with `/copal-deploy` (wraps [server/DEPLOY.md](./server/DEPLOY.md) class A/B/C/D).
+
+For cross-package contract changes (`pm_hooks.py`), run `/copal-cross-package` to verify both sides stay in sync.
+
+See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
+
+---
+
 ## Known gotchas
 
 1. **SeaweedFS replication `001` requires 2+ volume servers.** Single-machine setup must stay at `000`. Error: "No matching data node found!" — fix: revert to `000` and run `docker-compose up -d seaweedfs` (NOT `restart` — `restart` doesn't re-read compose file).

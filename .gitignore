@@ -1,5 +1,11 @@
-# Claude Code worktree metadata — local-only, never committed.
-.claude/
+# Claude Code per-machine / per-session metadata — never committed.
+# Note: .claude/commands/, agents/, hooks/, settings.json ARE checked in
+# (they are the project-scoped Claude scaffolding — see WORKFLOW.md).
+.claude/worktrees/
+.claude/handoff.md
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
 
 # Python build / packaging artefacts that should never be tracked.
 __pycache__/

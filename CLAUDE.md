@@ -2,7 +2,7 @@
 
 > Read this first for orientation across the monorepo.
 > Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md) and [copalpm/CLAUDE.md](./copalpm/CLAUDE.md).
-> Last updated: 2026-05-14 (Phase 6 closed — F4 OS triggers shipped).
+> Last updated: 2026-05-14 (Claude development scaffolding added — see [WORKFLOW.md](./WORKFLOW.md)).
 
 ---
 
@@ -132,9 +132,38 @@ Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
 
 ---
 
+## Working with Claude
+
+This repo ships a project-scoped Claude scaffolding (slash commands, subagents, hooks, permission allowlist) in `.claude/`. See [WORKFLOW.md](./WORKFLOW.md) for the full protocol.
+
+Quick references:
+- **Slash commands** — `/copal-status`, `/copal-test`, `/copal-deploy`, `/copal-phase-open`, `/copal-phase-close`, `/copal-handoff`, `/copal-gotcha-check`, `/copal-doc-check`. Defined under [.claude/commands/](./.claude/commands/).
+- **Subagents** — `copal-gotcha-reviewer`, `copal-doc-curator`, `copal-cross-package`. Defined under [.claude/agents/](./.claude/agents/).
+- **Standard work loop** — explore → plan → implement → test (`/copal-test`) → docs (`/copal-doc-check`) → commit → optional handoff (`/copal-handoff`).
+- **Cross-package contract** — any change touching `copalvx/client/copal_core/pm_hooks.py` or `copalpm/src/copalpm/copalvx_api.py` must run `/copal-cross-package` (invokes the cross-package subagent) and update both packages' CLAUDE.md in the same commit.
+
+### Where does each fact live?
+
+| Fact type | Goes in | Notes |
+|---|---|---|
+| Code pattern or gotcha intrinsic to one package | `<package>/CLAUDE.md` | Lives next to the code. |
+| Cross-cutting convention (test commands, identity, monorepo layout) | This file (umbrella `CLAUDE.md`) | Single source of truth at the top. |
+| Project status, phase progress | Status table above + `project_status.md` memory | Memory for cross-session, CLAUDE.md for newcomers. |
+| Historical migration narrative | [MERGE_PLAN.md](./MERGE_PLAN.md) | Append-only; deleted post-Phase-5. |
+| Future tracked follow-ups | MERGE_PLAN.md (now) → ROADMAP.md (post-Phase-5) | Single open-followups list. |
+| Per-feature deep design | Per-package CLAUDE.md or external doc | Keep umbrella scannable. |
+| Onboarding for contributors | CONTRIBUTING.md (Phase 5 deliverable) | OSS-facing. |
+| Release notes | CHANGELOG.md (Phase 5 deliverable) | OSS-facing. |
+| Personal preferences (commit style, env, etc.) | User-global memory (`~/.claude/projects/.../memory/`) | Never checked in. |
+
+Anti-patterns: don't duplicate the same fact across CLAUDE.md and memory; remove CLAUDE.md mentions in the same commit that removes the underlying code; gotchas stay in "Critical Gotchas" until the root cause is gone.
+
+---
+
 ## Where to read next
 
 If you're working on:
 - **CopalVX (server, client, push/pull, API)** → [copalvx/CLAUDE.md](./copalvx/CLAUDE.md)
 - **CopalPM (project registry, time tracking, TUI)** → [copalpm/CLAUDE.md](./copalpm/CLAUDE.md)
 - **The migration history / lessons learned** → [MERGE_PLAN.md](./MERGE_PLAN.md)
+- **The Claude scaffolding (workflow, slash commands, subagents)** → [WORKFLOW.md](./WORKFLOW.md)
