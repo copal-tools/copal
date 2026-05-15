@@ -162,6 +162,25 @@ def _fmt_size(b: int | None) -> str:
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
 
+def _pull_dest_invalid(raw: str) -> str | None:
+    """Validate a parent-folder input for `PullDestinationModal`.
+
+    Returns a user-facing error message if the path is unusable, or None
+    if it's acceptable. The folder itself need not exist — we `mkdir` it
+    on confirm — but the input must be a non-empty, absolute path.
+    """
+    if raw is None or not raw.strip():
+        return "Pick a parent folder first."
+    raw = raw.strip()
+    try:
+        p = Path(raw).expanduser()
+    except Exception:
+        return "Invalid path."
+    if not p.is_absolute():
+        return "Enter an absolute path."
+    return None
+
+
 def _doctor_banner_text(drift_count: int, orphan_count: int) -> str | None:
     """Banner string for the Dashboard. None when there's nothing to surface."""
     if not drift_count and not orphan_count:
@@ -677,7 +696,6 @@ class DashboardScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#search-input", Input).focus()
         self._session_cache: dict | None = None
         self._stop_session_poller = threading.Event()
         self._refresh_data()
@@ -686,6 +704,16 @@ class DashboardScreen(Screen):
         self.set_interval(60, self._poll_server)
         threading.Thread(target=self._fetch_server_data, daemon=True).start()
         threading.Thread(target=self._session_poll_loop, daemon=True).start()
+        # Focus the first project row instead of the search input. Otherwise
+        # Textual auto-focuses the first focusable widget (the search Input),
+        # which then captures arrow keys for text-cursor movement instead of
+        # row navigation. Users can click the search box or Tab to it to type.
+        self.call_after_refresh(self._focus_first_row)
+
+    def _focus_first_row(self) -> None:
+        rows = list(self.query(ProjectRow))
+        if rows:
+            rows[0].focus()
 
     def on_unmount(self) -> None:
         self._stop_session_poller.set()
@@ -838,6 +866,9 @@ class DashboardScreen(Screen):
 
     def on_project_row_selected(self, event: ProjectRow.Selected) -> None:
         if event.project.get("is_server_only"):
+            # Same flow as clicking the ▼ button — opens the pull-destination
+            # picker because server-only rows have no local path yet.
+            self._start_pull_flow(event.project)
             return
         if event.project.get("drift_reason"):
             self.notify(
@@ -877,7 +908,9 @@ class DashboardScreen(Screen):
         self.app.push_screen(CopalVXPushModal(cvx_name, suggested), on_confirm)
 
     def on_project_row_pull_requested(self, event: ProjectRow.PullRequested) -> None:
-        project  = event.project
+        self._start_pull_flow(event.project)
+
+    def _start_pull_flow(self, project: dict) -> None:
         cvx_name = project.get("cvx_name", "")
         path     = project.get("path") or ""
         versions = copalvx_api.get_versions(cvx_name)
@@ -1077,7 +1110,7 @@ class PullDestinationModal(ModalScreen):
             with Horizontal(id="pull-dest-row"):
                 yield Input(value=self._default_parent, id="pull-dest-input")
                 yield Button("\U0001F4C1", id="pull-dest-browse")
-            yield Static(self._preview_text(self._default_parent), id="pull-dest-preview")
+            yield Static("", id="pull-dest-preview")
             yield Static(
                 "[dim]The project folder is created inside the parent.[/dim]",
                 id="pull-dest-hint",
@@ -1088,6 +1121,7 @@ class PullDestinationModal(ModalScreen):
 
     def on_mount(self) -> None:
         self.query_one("#pull-dest-input", Input).focus()
+        self._validate()
 
     def on_key(self, event) -> None:
         if event.key == "escape":
@@ -1095,9 +1129,7 @@ class PullDestinationModal(ModalScreen):
             event.stop()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        self.query_one("#pull-dest-preview", Static).update(
-            self._preview_text(event.value)
-        )
+        self._validate()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._confirm()
@@ -1110,26 +1142,29 @@ class PullDestinationModal(ModalScreen):
         elif event.button.id == "pull-dest-browse":
             self._open_dir_picker()
 
+    def _validate(self) -> None:
+        """Live-update preview text and Continue-button enabled state."""
+        raw     = self.query_one("#pull-dest-input", Input).value
+        err     = _pull_dest_invalid(raw)
+        preview = self.query_one("#pull-dest-preview", Static)
+        if err:
+            preview.update(f"[red]{err}[/red]")
+        else:
+            preview.update(self._preview_text(raw))
+        self.query_one("#pull-dest-ok", Button).disabled = err is not None
+
     def _preview_text(self, parent_raw: str) -> str:
         parent_raw = (parent_raw or "").strip()
-        if not parent_raw:
-            return "[dim]Will pull into: (pick a parent folder)[/dim]"
-        try:
-            target = Path(parent_raw).expanduser() / self._project_name
-        except Exception:
-            return "[dim]Will pull into: (invalid path)[/dim]"
+        target = Path(parent_raw).expanduser() / self._project_name
         return f"[dim]Will pull into:[/dim] {target}"
 
     def _confirm(self) -> None:
-        raw = self.query_one("#pull-dest-input", Input).value.strip()
-        if not raw:
-            self.notify("Pick a parent folder first.", severity="warning")
+        raw = self.query_one("#pull-dest-input", Input).value
+        # Validation has already gated the Continue button, but a keyboard
+        # Enter on an invalid input would still hit `_confirm` — guard here.
+        if _pull_dest_invalid(raw) is not None:
             return
-        parent = Path(raw).expanduser()
-        if not parent.is_absolute():
-            self.notify("Please enter an absolute path.", severity="warning")
-            return
-        target = parent / self._project_name
+        target = Path(raw.strip()).expanduser() / self._project_name
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as e:
