@@ -39,7 +39,8 @@ copalpm/
     │   ├── test_imports.py     # All modules + handlers import cleanly
     │   ├── test_cli_parser.py  # Every documented argparse invocation
     │   ├── test_save_yaml.py   # Atomic save_yaml: round-trip, concurrency, Windows retry
-    │   └── test_time_cli.py    # cmd_log behavioural tests (no daemon required)
+    │   ├── test_time_cli.py    # cmd_log behavioural tests (no daemon required)
+    │   └── test_tui_doctor.py  # _doctor_banner_text + _dashboard_rows drift annotation
     └── integration/
         └── test_subcommands.py # Spawns `copalpm` binary, exercises read-only ops
 ```
@@ -237,12 +238,13 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-151 tests:
+160 tests:
 - 12 import tests (every module + handler resolves; no `from project_registry` references remain)
 - 63 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags, `project doctor`)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
 - 6 unit tests for atomic save_yaml (round-trip, header, tmp cleanup, overwrite, concurrent threads, Windows-retry mocked)
 - 7 unit tests for project_doctor helpers (`find_path_drift`, `find_orphan_sessions` — registry/sessions drift detection)
+- 9 unit tests for `_doctor_banner_text` and `_dashboard_rows` drift annotation (tui_app doctor wiring; monkeypatches `load_registry`)
 - 4 unit tests for time_cli.cmd_log (entry written via save_yaml, phase inherited from latest phase_log, no tmp file orphan, header preserved post-refactor)
 - 7 integration tests for read-only ops (live binary spawn)
 - 2 Windows-gated integration tests for the registry round-trip (skipped on macOS/Linux)
