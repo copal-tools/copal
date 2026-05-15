@@ -30,13 +30,14 @@ from textual.widgets import (
 from textual.widget import Widget
 from textual_fspicker import SelectDirectory
 
-from copalpm.config import DATA_DIR
+from copalpm.config import DATA_DIR, SESSIONS_LOG
 from copalpm import copalvx_api
 from copalpm.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
     load_templates, save_templates, slug_title, upsert_registry,
 )
+from copalpm.project_doctor import find_orphan_sessions, find_path_drift
 
 
 # ── Service helpers ────────────────────────────────────────────────────────────
@@ -161,9 +162,29 @@ def _fmt_size(b: int | None) -> str:
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
 
+def _doctor_banner_text(drift_count: int, orphan_count: int) -> str | None:
+    """Banner string for the Dashboard. None when there's nothing to surface."""
+    if not drift_count and not orphan_count:
+        return None
+    parts = []
+    if drift_count:
+        parts.append(
+            f"{drift_count} stale registry "
+            f"{'entry' if drift_count == 1 else 'entries'}"
+        )
+    if orphan_count:
+        parts.append(
+            f"{orphan_count} orphan session "
+            f"{'group' if orphan_count == 1 else 'groups'}"
+        )
+    return f"[bold]⚠[/bold] {' · '.join(parts)} — press [b]D[/b] for details."
+
+
 def _dashboard_rows() -> list[dict]:
-    rows = []
-    for entry in load_registry():
+    rows     = []
+    registry = load_registry()
+    drift_by_id = {d["id"]: d["reason"] for d in find_path_drift(registry)}
+    for entry in registry:
         pid       = entry["id"]
         path      = Path(entry.get("path", ""))
         yaml_path = path / "project.yaml"
@@ -193,6 +214,7 @@ def _dashboard_rows() -> list[dict]:
             "path":              str(path),
             "cvx_name":          cvx.get("project_name"),
             "cvx_local_version": cvx.get("last_push_version"),
+            "drift_reason":      drift_by_id.get(pid),
         })
     return rows
 
@@ -562,19 +584,27 @@ class ProjectRow(Widget):
         border-left: tall $accent;
     }
     ProjectRow.-server-only { color: $text-muted; }
+    ProjectRow.-stale { color: $text-muted; }
     ProjectRow #row-name { width: 1fr; }
     ProjectRow Button { margin-left: 1; min-width: 5; }
     ProjectRow #btn-open-folder { min-width: 13; }
     """
 
     def __init__(self, project: dict, has_update: bool = False) -> None:
-        is_so = project.get("is_server_only", False)
-        super().__init__(classes="-server-only" if is_so else "")
+        classes = []
+        if project.get("is_server_only"):
+            classes.append("-server-only")
+        if project.get("drift_reason"):
+            classes.append("-stale")
+        super().__init__(classes=" ".join(classes))
         self._project   = project
         self._has_update = has_update
 
     def compose(self) -> ComposeResult:
-        name = self._project.get("name", "?")
+        name     = self._project.get("name", "?")
+        is_stale = bool(self._project.get("drift_reason"))
+        if is_stale:
+            name = f"[yellow]⚠[/yellow] {name}"
         if self._has_update:
             name = f"{name} [yellow]↑[/yellow]"
         yield Label(name, id="row-name")
@@ -583,9 +613,9 @@ class ProjectRow(Widget):
         cvx_name = self._project.get("cvx_name")
         is_so    = self._project.get("is_server_only", False)
 
-        if path:
+        if path and not is_stale:
             yield Button("Open Folder", id="btn-open-folder")
-        if cvx_name and not is_so:
+        if cvx_name and not is_so and not is_stale:
             yield Button("▲", id="btn-push")
         if cvx_name:
             yield Button("▼", id="btn-pull")
@@ -615,19 +645,34 @@ class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_project",      "New project"),
         Binding("t", "manage_templates", "Templates"),
+        Binding("d", "open_doctor",      "Doctor"),
         Binding("r", "refresh",          "Refresh"),
         Binding("q", "app.quit",         "Quit"),
     ]
 
+    DEFAULT_CSS = """
+    #doctor-banner {
+        background: $warning 20%;
+        color: $warning;
+        padding: 0 1;
+        height: 1;
+    }
+    """
+
     _local_rows:  list[dict]            = []
     _server_rows: list[dict]            = []
     _cvx_latest:  dict[str, str | None] = {}
+    _drift_count:   int                 = 0
+    _orphan_count:  int                 = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="search-row"):
             yield Input(placeholder="Search projects…", id="search-input")
             yield Checkbox("Server projects", value=True, id="server-check")
+        banner = Static("", id="doctor-banner")
+        banner.display = False
+        yield banner
         yield ScrollableContainer(id="project-list")
         yield Footer()
 
@@ -654,7 +699,23 @@ class DashboardScreen(Screen):
 
     def _refresh_data(self) -> None:
         self._local_rows = _dashboard_rows()
+        registry         = load_registry()
+        self._drift_count  = sum(1 for r in self._local_rows if r.get("drift_reason"))
+        self._orphan_count = len(find_orphan_sessions(registry, SESSIONS_LOG))
+        self._refresh_doctor_banner()
         self._rebuild_list()
+
+    def _refresh_doctor_banner(self) -> None:
+        try:
+            banner = self.query_one("#doctor-banner", Static)
+        except Exception:
+            return
+        text = _doctor_banner_text(self._drift_count, self._orphan_count)
+        if text is None:
+            banner.display = False
+            return
+        banner.update(text)
+        banner.display = True
 
     def _rebuild_list(self) -> None:
         query     = self.query_one("#search-input", Input).value.strip().lower()
@@ -777,6 +838,13 @@ class DashboardScreen(Screen):
 
     def on_project_row_selected(self, event: ProjectRow.Selected) -> None:
         if event.project.get("is_server_only"):
+            return
+        if event.project.get("drift_reason"):
+            self.notify(
+                "Folder missing — press [D] for cleanup options.",
+                title="Stale registry entry",
+                severity="warning",
+            )
             return
         self.app.push_screen(ProjectDetailScreen(event.project))
 
@@ -912,6 +980,13 @@ class DashboardScreen(Screen):
 
     def action_manage_templates(self) -> None:
         self.app.push_screen(TemplateScreen())
+
+    def action_open_doctor(self) -> None:
+        self.app.push_screen(DoctorModal(), self._on_doctor_dismiss)
+
+    def _on_doctor_dismiss(self, _result) -> None:
+        # Entries may have been dropped or re-registered — reload.
+        self._refresh_data()
 
 
 class CopalVXPushModal(ModalScreen):
@@ -1429,6 +1504,175 @@ def _strip_markup(text: str) -> str:
     return _MARKUP_RE.sub("", text)
 
 
+class DoctorDriftRow(Widget):
+    """One row in the DoctorModal — a stale registry entry with Re-register / Drop buttons."""
+
+    class RegisterRequested(Message):
+        def __init__(self, project_id: str, project_name: str) -> None:
+            super().__init__()
+            self.project_id   = project_id
+            self.project_name = project_name
+
+    class DropRequested(Message):
+        def __init__(self, project_id: str, project_name: str) -> None:
+            super().__init__()
+            self.project_id   = project_id
+            self.project_name = project_name
+
+    DEFAULT_CSS = """
+    DoctorDriftRow {
+        height: 3;
+        padding: 0 1;
+        layout: horizontal;
+        align: left middle;
+        border-bottom: solid $panel;
+    }
+    DoctorDriftRow #drift-label { width: 1fr; }
+    DoctorDriftRow Button { margin-left: 1; min-width: 12; }
+    """
+
+    def __init__(self, drift: dict) -> None:
+        super().__init__()
+        self._drift = drift
+
+    def compose(self) -> ComposeResult:
+        d        = self._drift
+        label    = f'{d["id"]}'
+        if d.get("name"):
+            label += f'  [dim]{d["name"]}[/dim]'
+        reason   = d.get("reason", "")
+        explain  = {
+            "missing_path": "folder is gone",
+            "missing_yaml": "folder exists but no project.yaml",
+        }.get(reason, reason)
+        path     = d.get("path") or "(no path)"
+        yield Label(
+            f"{label}  [yellow]·[/yellow] [dim]{explain}: {path}[/dim]",
+            id="drift-label",
+        )
+        yield Button("Re-register", id="btn-drift-register")
+        yield Button("Drop",        id="btn-drift-drop", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "btn-drift-register":
+            self.post_message(self.RegisterRequested(
+                self._drift["id"], self._drift.get("name", "") or ""
+            ))
+        elif event.button.id == "btn-drift-drop":
+            self.post_message(self.DropRequested(
+                self._drift["id"], self._drift.get("name", "") or ""
+            ))
+
+
+class DoctorModal(ModalScreen):
+    """Surface `project doctor` findings in the TUI.
+
+    Lists path-drift registry entries with Re-register / Drop actions, plus a
+    read-only orphan-sessions section. Consumes `find_path_drift` and
+    `find_orphan_sessions` from project_doctor — no helper reimplementation.
+    """
+
+    DEFAULT_CSS = """
+    DoctorModal { align: center middle; }
+    #doctor-box {
+        width: 90;
+        height: 32;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #doctor-scroll { height: 1fr; }
+    #doctor-empty  { padding: 2 1; color: $text-muted; content-align: center middle; }
+    #doctor-hint   { margin-top: 1; color: $text-muted; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="doctor-box"):
+            yield Label("[bold]Registry doctor[/bold]")
+            yield Rule()
+            yield ScrollableContainer(id="doctor-scroll")
+            yield Static("[dim]Esc to close[/dim]", id="doctor-hint")
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def _refresh(self) -> None:
+        registry = load_registry()
+        drift    = find_path_drift(registry)
+        orphans  = find_orphan_sessions(registry, SESSIONS_LOG)
+
+        scroll = self.query_one("#doctor-scroll", ScrollableContainer)
+        scroll.remove_children()
+
+        if not drift and not orphans:
+            scroll.mount(Static(
+                "[green]All checks passed.[/green]\n"
+                "[dim]No stale registry entries or orphan sessions.[/dim]",
+                id="doctor-empty",
+            ))
+            return
+
+        if drift:
+            scroll.mount(Label("[bold]Path drift[/bold]"))
+            for d in drift:
+                scroll.mount(DoctorDriftRow(d))
+
+        if orphans:
+            if drift:
+                scroll.mount(Static(""))
+            scroll.mount(Label("[bold]Orphan sessions[/bold]"))
+            scroll.mount(Static(
+                "[dim]Sessions in sessions.jsonl whose project_id is no longer in "
+                "the registry. Re-register the project (if its folder still exists) "
+                "to flush these on the next sync.[/dim]"
+            ))
+            for pid, count in sorted(orphans.items()):
+                plural = "session" if count == 1 else "sessions"
+                scroll.mount(Static(f"  [yellow]·[/yellow] {pid} — {count} {plural}"))
+
+    def on_doctor_drift_row_register_requested(
+        self, event: DoctorDriftRow.RegisterRequested
+    ) -> None:
+        pid  = event.project_id
+        name = event.project_name
+
+        def on_pick(path: Path | None) -> None:
+            if path is None:
+                return
+            try:
+                upsert_registry(pid, name or pid, path)
+                self.notify(f"Re-registered {pid} → {path}", title="Doctor")
+            except Exception as e:
+                self.notify(str(e), title="Re-register failed", severity="error")
+                return
+            self._refresh()
+
+        start = Path.home() / "Projects"
+        if not start.exists():
+            start = Path.home()
+        self.app.push_screen(SelectDirectory(str(start)), on_pick)
+
+    def on_doctor_drift_row_drop_requested(
+        self, event: DoctorDriftRow.DropRequested
+    ) -> None:
+        pid = event.project_id
+        try:
+            save_registry([p for p in load_registry() if p.get("id") != pid])
+        except Exception as e:
+            self.notify(str(e), title="Drop failed", severity="error")
+            return
+        self.notify(f"Dropped {pid} from registry.", title="Doctor")
+        self._refresh()
+
+
 class DeleteProjectModal(ModalScreen):
     """Confirm deletion of a ProjectRegistry project, with optional folder + server cleanup."""
 
@@ -1446,10 +1690,16 @@ class DeleteProjectModal(ModalScreen):
     #del-proj-buttons Button { margin-right: 1; }
     """
 
-    def __init__(self, project_name: str, cvx_project_name: str | None) -> None:
+    def __init__(
+        self,
+        project_name: str,
+        cvx_project_name: str | None,
+        local_folder_exists: bool = True,
+    ) -> None:
         super().__init__()
-        self._project_name     = project_name
-        self._cvx_project_name = cvx_project_name
+        self._project_name        = project_name
+        self._cvx_project_name    = cvx_project_name
+        self._local_folder_exists = local_folder_exists
 
     def compose(self) -> ComposeResult:
         with Vertical(id="del-proj-box"):
@@ -1457,7 +1707,10 @@ class DeleteProjectModal(ModalScreen):
                         id="del-proj-warning")
             yield Rule()
             yield Static("Removes the project from the registry.")
-            yield Checkbox("Also delete local folder", id="del-folder-check")
+            if self._local_folder_exists:
+                yield Checkbox("Also delete local folder", id="del-folder-check")
+            else:
+                yield Static("[dim]Local folder is already gone.[/dim]")
             if self._cvx_project_name:
                 yield Rule()
                 yield Static(f"[dim]CopalVX: {self._cvx_project_name}[/dim]")
@@ -1471,7 +1724,9 @@ class DeleteProjectModal(ModalScreen):
         if event.button.id == "btn-del-cancel":
             self.dismiss(None)
         elif event.button.id == "btn-del-confirm":
-            delete_folder = self.query_one("#del-folder-check", Checkbox).value
+            delete_folder = False
+            if self._local_folder_exists:
+                delete_folder = self.query_one("#del-folder-check", Checkbox).value
             delete_cvx    = False
             delete_blobs  = False
             if self._cvx_project_name:
@@ -2188,8 +2443,10 @@ class ProjectDetailScreen(Screen):
 
             self.app.pop_screen()
 
+        path_str            = self._project.get("path", "")
+        local_folder_exists = bool(path_str) and Path(path_str).exists()
         self.app.push_screen(
-            DeleteProjectModal(project_name, cvx_name),
+            DeleteProjectModal(project_name, cvx_name, local_folder_exists),
             on_confirm,
         )
 
