@@ -4,7 +4,7 @@ These lock in the transliteration step that prevents Unicode-named projects
 (Greek, Cyrillic, accented Latin, CJK, etc.) from collapsing to empty or
 symbol-only slugs — the bug that produced `-40-140526` on the CopalVX server
 when the user entered `Κατάρρευση τιμών έως -40%`. See `copalpm/CLAUDE.md`
-gotcha #14 for the underlying principle: letters get replaced, symbols may
+gotcha #13 for the underlying principle: letters get replaced, symbols may
 be truncated.
 """
 

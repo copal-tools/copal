@@ -458,7 +458,7 @@ class InitScreen(Screen):
         # Guard against names that transliterate to an empty slug (emoji-only,
         # pure symbols, etc.). Without this, the folder name and CopalVX
         # project name would degrade to just the date suffix (or worse, a
-        # leading hyphen). See pm._to_ascii and CLAUDE.md gotcha #14.
+        # leading hyphen). See pm._to_ascii and CLAUDE.md gotcha #13.
         if not slug_title(name):
             self.notify(
                 "Project name must contain at least one letter or digit "

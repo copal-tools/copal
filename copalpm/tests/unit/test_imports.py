@@ -83,10 +83,7 @@ def test_import_tui_main():
 
 def test_import_config():
     from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
-    # Post-migration DATA_DIR is `copalpm/`. On a system where the auto-migration
-    # fell back (e.g. permission error), it can still be the legacy
-    # `project-registry/` path — accept either to keep the test robust.
-    assert DATA_DIR.name in ("copalpm", "project-registry")
+    assert DATA_DIR.name == "copalpm"
 
 
 def test_import_copalvx_api():

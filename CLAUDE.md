@@ -2,7 +2,7 @@
 
 > Read this first for orientation across the monorepo.
 > Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md) and [copalpm/CLAUDE.md](./copalpm/CLAUDE.md).
-> Last updated: 2026-05-14 (Claude development scaffolding added — see [WORKFLOW.md](./WORKFLOW.md)).
+> Last updated: 2026-05-15 (Wave 3 — legacy `project-registry/` migration shim removed).
 
 ---
 
@@ -39,7 +39,7 @@ copal/
 │   ├── NOTICE
 │   ├── pyproject.toml
 │   ├── src/copalpm/  # Python package (single `copalpm` binary)
-│   └── tests/        # pytest suite (61 tests)
+│   └── tests/        # pytest suite (141 tests)
 ├── LICENSE           # Umbrella Apache 2.0
 ├── NOTICE
 ├── README.md         # Public-facing intro to both packages
@@ -85,7 +85,7 @@ Always operate on the monorepo at `E:\Development\copal\`. The two pre-rebrand s
 
 For working directory-specific config:
 - The CopalVX client reads `~/.copal/config.json` per user. Its `client_path` key must now point at `<monorepo>/copalvx/client/` (e.g. `E:\Development\copal\copalvx\client`), not the old standalone path.
-- The CopalPM data dir is `%APPDATA%\copalpm\` (Windows) / `~/.config/copalpm/` (Mac/Linux). Auto-migrated from the pre-rebrand `project-registry/` path on first import after upgrade — see CopalPM's gotcha #1.
+- The CopalPM data dir is `%APPDATA%\copalpm\` (Windows) / `~/.config/copalpm/` (Mac/Linux).
 
 ---
 
@@ -94,7 +94,7 @@ For working directory-specific config:
 | Phase | Status |
 |-------|--------|
 | Phases 0–4 (rebrand + monorepo + audit + restructure) | ✅ Complete |
-| Phase 5 (public launch readiness — CI, real PyPI releases, archive old repos) | ⏳ Pending |
+| Phase 5 (public launch readiness — CI, real PyPI releases, archive old repos) | ⏳ Pending (legacy migration shim removed 2026-05-15) |
 | Phase 6 (feature work: folder picker, pull-dest memory, push/pull activity log, server hardening, OS triggers) | ✅ Complete |
 | Phase 7 (auth on CopalVX server) | ⏳ Deferred, LAN-only system |
 | Figma UI redesign for CopalPM | ⏳ User-driven, separate |
