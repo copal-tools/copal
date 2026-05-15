@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 from copalpm.config import DATA_DIR, SESSIONS_LOG, REGISTRY
+from copalpm.project_record import save_yaml
 
 
 class ServiceDownError(RuntimeError):
@@ -269,15 +270,7 @@ def cmd_log(args):
     }
 
     record.setdefault("time_entries", []).append(entry)
-
-    header = (
-        "# project.yaml — Project Record v1\n"
-        "# Reference: schema/project-record.yaml\n\n"
-    )
-    content = header + yaml.dump(
-        record, default_flow_style=False, allow_unicode=True, sort_keys=False
-    )
-    yaml_path.write_text(content, encoding="utf-8")
+    save_yaml(yaml_path, record)
 
     print(f"  Logged {args.duration_min} min — {args.description}")
     total_s = sum(int(e.get("duration_sec", 0)) for e in record["time_entries"])
