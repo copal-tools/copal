@@ -29,7 +29,7 @@ def _to_ascii(s: str) -> str:
     downstream regex strip in `slug_title` / `make_slug` then removes whatever
     residual punctuation remains.
 
-    See `copalpm/CLAUDE.md` gotcha #14 — undoing this step re-introduces the
+    See `copalpm/CLAUDE.md` gotcha #13 — undoing this step re-introduces the
     `-40-140526` bug where Greek input collapsed to symbols-only output.
     """
     return unidecode(s or "")

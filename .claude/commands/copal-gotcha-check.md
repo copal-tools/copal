@@ -28,7 +28,6 @@ description: Audit the current diff against the documented gotcha catalog (stora
 | Storage contract | `copalvx/server/docker-compose.yml` | New container path under `/data/` etc. must be on a mounted volume |
 | HKLM/Win11 24H2 | `copalpm/src/copalpm/shell_integration.py` | New shell verbs must use HKLM, not HKCU |
 | Subprocess encoding | Both packages, any subprocess.run with output | Must pass `PYTHONIOENCODING=utf-8` env on Windows |
-| Data-dir migration | `copalpm/src/copalpm/config.py` | New user-data files must work with `_resolve_data_dir()` migration |
 | FK delete order | `copalvx/server/app/main.py` | DELETE must respect projects → commits → project_files → assets cascade |
 | Non-fatal subprocess hooks | `copalvx/client/copal_core/pm_hooks.py`, `copalpm/src/copalpm/copalvx_api.py` | Wrap in try/except, warn and continue, never raise |
 | Body size limit | `copalvx/server/app/main.py` | New POST endpoints respect or document 50 MB Content-Length cap |

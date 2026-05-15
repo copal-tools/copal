@@ -207,29 +207,6 @@ CopalPM's directory contents:
 `copalpm teardown` removes the service and shell verbs but leaves both
 directories untouched. To wipe CopalPM data, delete the directory above; to
 wipe CopalVX client data, delete `~/.copal/`.
-
-### Upgrading from a pre-rebrand install
-
-CopalPM was renamed from `ProjectRegistry` in May 2026. The first time you
-import or run `copalpm` after upgrading, the old `project-registry/` directory
-(if present) is auto-copied into `copalpm/`. Specifically:
-
-- The migration runs at module import time, on the first run after upgrade.
-- A marker file `.migrated_from_project-registry` is dropped into the new
-  directory recording when and from where.
-- The old `project-registry/` directory is **preserved as a backup** — delete
-  it manually once you've verified everything works.
-- If the task-tracker service was already running during the upgrade, **restart
-  it** so it picks up the new path:
-
-  ```bash
-  copalpm service uninstall && copalpm service install
-  ```
-
-This migration shim is scheduled for removal in the Phase 5 cleanup; if you
-upgrade after that, you'll need to copy the directory manually if you skipped
-this window.
-
 ---
 
 ## Timezone behavior

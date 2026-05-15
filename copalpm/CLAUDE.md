@@ -3,7 +3,7 @@
 > AI-assistant orientation for the CopalPM package.
 > For monorepo-wide context see [../CLAUDE.md](../CLAUDE.md).
 > For user-facing install/usage see [README.md](./README.md).
-> Last updated: 2026-05-14.
+> Last updated: 2026-05-15.
 
 ---
 
@@ -13,7 +13,7 @@ Terminal project management + time tracking for motion design and VFX work. File
 
 The single `copalpm` binary fronts everything via subcommand groups. With no args, it launches the TUI (the most common entry point).
 
-Renamed from `ProjectRegistry` (and the package was `project_registry/`) in Phase 2 of the rebrand. The user data directory was migrated from `project-registry/` to `copalpm/` in a follow-up release with a one-time auto-copy on first run — see gotcha #1.
+Renamed from `ProjectRegistry` (and the package was `project_registry/`) in Phase 2 of the rebrand.
 
 ---
 
@@ -96,7 +96,7 @@ copalpm shell-trigger {start|stop|new-project} --folder PATH
 Three identifiers travel with every project. They serve different audiences
 and *can* drift apart — knowing which is which prevents bugs like the Greek-
 name regression that produced a CopalVX project literally named `-40-140526`
-(see gotcha #14).
+(see gotcha #13).
 
 | Name | Lives in | Charset | Set by | Used for |
 |------|----------|---------|--------|----------|
@@ -183,7 +183,7 @@ Footprint:
   space inside a folder). Two contexts × three verbs = 6 parent keys. Each key
   carries a menu title, an `Icon` value pointing at `src/copalpm/assets/copal-*.ico`,
   and a `command` subkey. **Install/uninstall need admin elevation** — see
-  gotcha #11 for why HKCU isn't viable on Win11 24H2+. Status is read-only
+  gotcha #10 for why HKCU isn't viable on Win11 24H2+. Status is read-only
   and works for any user.
 - **macOS:** `.workflow` bundles in `~/Library/Services/`. The XML for both
   `Info.plist` and `document.wflow` is generated from templates shipped at
@@ -193,7 +193,7 @@ Footprint:
   do **not** edit by hand. `AMWorkflowServiceRunner` aborts at runtime if the
   `workflowMetaData` structure isn't a recognized `AMServiceMetaData` shape
   (the Service appears in the Finder menu but clicking it silently does
-  nothing — see gotcha #13). Install/uninstall runs `pbs -flush` so Finder
+  nothing — see gotcha #12). Install/uninstall runs `pbs -flush` so Finder
   picks up changes immediately.
 
 The "New Project Here" verb spawns `copalpm tui --screen init --dir <folder>`
@@ -235,14 +235,14 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-148 tests:
+141 tests:
 - 12 import tests (every module + handler resolves; no `from project_registry` references remain)
 - 63 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags, `project doctor`)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
 - 7 unit tests for project_doctor helpers (`find_path_drift`, `find_orphan_sessions` — registry/sessions drift detection)
 - 7 integration tests for read-only ops (live binary spawn)
 - 2 Windows-gated integration tests for the registry round-trip (skipped on macOS/Linux)
-- 21 slug/transliteration unit tests, 7 data-dir-migration tests, 7 setup_cmd tests, 6 copalvx_api wrapper tests, 4 Windows-gated shell-integration registry tests
+- 21 slug/transliteration unit tests, 7 setup_cmd tests, 6 copalvx_api wrapper tests, 4 Windows-gated shell-integration registry tests
 
 Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
@@ -250,7 +250,7 @@ Integration tests auto-skip if the `copalpm` binary is not in the venv.
 
 ## Working with Claude (CopalPM-specific)
 
-This package's gotchas (data-dir migration, HKLM/Win11 24H2 shell verbs, subprocess encoding, Textual scrollable-form layout) are codified in the `copal-gotcha-reviewer` subagent (defined at [../.claude/agents/copal-gotcha-reviewer.md](../.claude/agents/copal-gotcha-reviewer.md)) — invoke via `/copal-gotcha-check` after any change touching `src/copalpm/shell_integration.py`, `src/copalpm/config.py`, `src/copalpm/copalvx_api.py`, or any new file added under the user-data dir.
+This package's gotchas (HKLM/Win11 24H2 shell verbs, subprocess encoding, Textual scrollable-form layout) are codified in the `copal-gotcha-reviewer` subagent (defined at [../.claude/agents/copal-gotcha-reviewer.md](../.claude/agents/copal-gotcha-reviewer.md)) — invoke via `/copal-gotcha-check` after any change touching `src/copalpm/shell_integration.py` or `src/copalpm/copalvx_api.py`.
 
 For cross-package contract changes (`copalvx_api.py`), run `/copal-cross-package` to verify both sides stay in sync.
 
@@ -260,33 +260,31 @@ See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
 
 ## Gotchas
 
-1. **One-time auto-migration from the legacy `project-registry/` data dir.** `config.py:_resolve_data_dir()` runs on every import: if `<base>/copalpm/` doesn't exist but `<base>/project-registry/` does, it `shutil.copytree`s the legacy directory into the new location and writes a `.migrated_from_project-registry` marker (source path + UTC timestamp). The legacy directory is preserved as a backup — users delete it manually once they've verified things work. If the copy fails (permissions, disk full, etc.) the resolver falls back to the legacy directory so the tool stays functional; next run retries. Idempotent: once the new dir exists, the migration code is a no-op. Note: if the task-tracker service was running OLD code during the upgrade, it will keep writing to `project-registry/` while CLI processes use `copalpm/` — users running the daemon must `copalpm service uninstall && copalpm service install` after upgrade.
+1. **`task-tracker` is hidden from `copalpm --help` but still callable.** The OS service spec invokes `copalpm task-tracker`. `cli._build_parser()` filters it out of `_choices_actions` after construction (argparse's `help=SUPPRESS` leaves an ugly `==SUPPRESS==` literal in `--help` output; the filter cleans that up).
 
-2. **`task-tracker` is hidden from `copalpm --help` but still callable.** The OS service spec invokes `copalpm task-tracker`. `cli._build_parser()` filters it out of `_choices_actions` after construction (argparse's `help=SUPPRESS` leaves an ugly `==SUPPRESS==` literal in `--help` output; the filter cleans that up).
+2. **Pre-rebrand service installs must be uninstalled before installing the new one.** Old plist label was `com.projectregistry.task-tracker` / NSSM service was `TaskTracker`. The new commands won't touch the old service entries. Anyone migrating must run `pm uninstall-service` from the old install before `copalpm service install` from the new one — otherwise the old service keeps trying to invoke a `task-tracker` binary that no longer exists.
 
-3. **Pre-rebrand service installs must be uninstalled before installing the new one.** Old plist label was `com.projectregistry.task-tracker` / NSSM service was `TaskTracker`. The new commands won't touch the old service entries. Anyone migrating must run `pm uninstall-service` from the old install before `copalpm service install` from the new one — otherwise the old service keeps trying to invoke a `task-tracker` binary that no longer exists.
+3. **Daemon spec changed in Phase 2.** Before: standalone `task-tracker(.exe)` binary registered directly with the OS service manager. After: the `copalpm` binary is registered, with `task-tracker` as the first argument. macOS plist `ProgramArguments` is a 2-element array; NSSM install passes `task-tracker` as the service args. Reflected in `pm.py`'s `cmd_install_service`.
 
-4. **Daemon spec changed in Phase 2.** Before: standalone `task-tracker(.exe)` binary registered directly with the OS service manager. After: the `copalpm` binary is registered, with `task-tracker` as the first argument. macOS plist `ProgramArguments` is a 2-element array; NSSM install passes `task-tracker` as the service args. Reflected in `pm.py`'s `cmd_install_service`.
+4. **`call_from_thread()` is on `App`, not `Screen`.** In Textual, use `self.app.call_from_thread()` not `self.call_from_thread()` when calling from a background thread inside a Screen subclass. Multiple places in `tui_app.py` rely on this pattern (e.g. `DashboardScreen`'s 60s server-version poll).
 
-5. **`call_from_thread()` is on `App`, not `Screen`.** In Textual, use `self.app.call_from_thread()` not `self.call_from_thread()` when calling from a background thread inside a Screen subclass. Multiple places in `tui_app.py` rely on this pattern (e.g. `DashboardScreen`'s 60s server-version poll).
+5. **Textual scrollable centered forms have a fragile layout pattern.** `ScrollableContainer(Vertical(...))` with `height: 1fr` collapses the inner `Vertical` to zero. Correct pattern: `Vertical(id="box")` as the direct child of the Screen with **`height: 85vh`** (fixed — `height: auto` breaks `vh`/`1fr` resolution in children); flat `ScrollableContainer(id="scroll")` inside with **`height: 1fr`**; all form fields as flat direct children of the `ScrollableContainer`; buttons outside, below it. See `InitScreen` and `EditTemplateModal` for the canonical implementation. **Never nest a `Vertical` inside a `ScrollableContainer` to group toggle-able fields** — it clips virtual height; use a CSS class instead and `query(".class")` for bulk display toggling.
 
-6. **Textual scrollable centered forms have a fragile layout pattern.** `ScrollableContainer(Vertical(...))` with `height: 1fr` collapses the inner `Vertical` to zero. Correct pattern: `Vertical(id="box")` as the direct child of the Screen with **`height: 85vh`** (fixed — `height: auto` breaks `vh`/`1fr` resolution in children); flat `ScrollableContainer(id="scroll")` inside with **`height: 1fr`**; all form fields as flat direct children of the `ScrollableContainer`; buttons outside, below it. See `InitScreen` and `EditTemplateModal` for the canonical implementation. **Never nest a `Vertical` inside a `ScrollableContainer` to group toggle-able fields** — it clips virtual height; use a CSS class instead and `query(".class")` for bulk display toggling.
+6. **Subprocess stdout encoding defaults to cp1252 on Windows when piped.** Emoji in print statements causes `UnicodeEncodeError: 'charmap' codec can't encode character`. Fix in any code that spawns Python subprocesses on Windows: pass `PYTHONIOENCODING=utf-8` in the subprocess environment. Also pass `PYTHONUNBUFFERED=1` if you need real-time line streaming from the child process.
 
-7. **Subprocess stdout encoding defaults to cp1252 on Windows when piped.** Emoji in print statements causes `UnicodeEncodeError: 'charmap' codec can't encode character`. Fix in any code that spawns Python subprocesses on Windows: pass `PYTHONIOENCODING=utf-8` in the subprocess environment. Also pass `PYTHONUNBUFFERED=1` if you need real-time line streaming from the child process.
+7. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** DashboardScreen is the root screen and never gets popped, so holding `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
 
-8. **Background threads in `DashboardScreen` must use `self.app.call_from_thread()`.** DashboardScreen is the root screen and never gets popped, so holding `self` in a daemon thread is safe. Other screens that can be popped should avoid long-lived threads or guard against calling `call_from_thread` after dismissal.
+8. **HTTP calls must never run on the 1s tick of `_tick_timer`.** Both `DashboardScreen` and `ProjectDetailScreen` previously called `_active_session()` (an HTTP GET to the task-tracker daemon, 2s timeout) directly inside `_tick_timer`, which fires every second on the render thread. When the daemon was down — common after the Phase 2 service rename if a user hadn't reinstalled the service — every tick blocked for up to 2 seconds, producing severe scroll lag and periodic stutters. Pattern in place now: a daemon thread polls every 5s and writes to `self._session_cache`; `_tick_timer` just reads the cache and formats the title. Any future "watch this remote thing" code must follow the same shape.
 
-9. **HTTP calls must never run on the 1s tick of `_tick_timer`.** Both `DashboardScreen` and `ProjectDetailScreen` previously called `_active_session()` (an HTTP GET to the task-tracker daemon, 2s timeout) directly inside `_tick_timer`, which fires every second on the render thread. When the daemon was down — common after the Phase 2 service rename if a user hadn't reinstalled the service — every tick blocked for up to 2 seconds, producing severe scroll lag and periodic stutters. Pattern in place now: a daemon thread polls every 5s and writes to `self._session_cache`; `_tick_timer` just reads the cache and formats the title. Any future "watch this remote thing" code must follow the same shape.
+9. **The `📁` folder picker on InitScreen requires `textual-fspicker`.** Adding new path inputs anywhere in the TUI? Use the same pattern — `Horizontal(Input, Button("📁"))` with a button handler that calls `self.app.push_screen(SelectDirectory(<start>), <callback>)`. The picker's starting location walks up the filesystem to the nearest existing path; absent that, it falls back to `Path.home()`. See `InitScreen._open_dir_picker` for the canonical implementation.
 
-10. **The `📁` folder picker on InitScreen requires `textual-fspicker`.** Adding new path inputs anywhere in the TUI? Use the same pattern — `Horizontal(Input, Button("📁"))` with a button handler that calls `self.app.push_screen(SelectDirectory(<start>), <callback>)`. The picker's starting location walks up the filesystem to the nearest existing path; absent that, it falls back to `Path.home()`. See `InitScreen._open_dir_picker` for the canonical implementation.
+10. **Windows 11 24H2/25H2 silently filters per-user shell verbs.** The first cut wrote verbs to `HKCU\Software\Classes\Directory(\Background)\shell\…` — works on Win10 and pre-24H2 Win11, doesn't work on Win11 build 26200+. Verified by side-by-side test: an HKLM-registered minimal verb appeared in the legacy menu, an HKCU one with identical structure (same default value, same ACL, same parent class) did not. Pre-existing HKCU verbs (e.g. Anchorpoint installed before the OS upgrade) are grandfathered in; new HKCU writes after the upgrade are filtered. The fix is to write to HKLM, which requires admin (`copalpm shell-integration install` checks `IsUserAnAdmin()` and prints clear instructions if not elevated). `_uninstall_windows()` only requires admin if there are HKLM keys to remove — keeping the cleanup of stale HKCU entries from older installs admin-free. Verbs only appear in the *legacy* context menu — Shift+right-click, or right-click → "Show more options"; the modern menu requires an IExplorerCommand COM extension which is out of scope for F4. Explorer also caches verb visibility per-user; if newly installed verbs don't show, `taskkill /F /IM explorer.exe & start explorer.exe` (or sign out / sign in for the most stubborn cases). The Finder `pbs -flush` call in the macOS installer makes the equivalent issue invisible on the Mac.
 
-11. **Windows 11 24H2/25H2 silently filters per-user shell verbs.** The first cut wrote verbs to `HKCU\Software\Classes\Directory(\Background)\shell\…` — works on Win10 and pre-24H2 Win11, doesn't work on Win11 build 26200+. Verified by side-by-side test: an HKLM-registered minimal verb appeared in the legacy menu, an HKCU one with identical structure (same default value, same ACL, same parent class) did not. Pre-existing HKCU verbs (e.g. Anchorpoint installed before the OS upgrade) are grandfathered in; new HKCU writes after the upgrade are filtered. The fix is to write to HKLM, which requires admin (`copalpm shell-integration install` checks `IsUserAnAdmin()` and prints clear instructions if not elevated). `_uninstall_windows()` only requires admin if there are HKLM keys to remove — keeping the cleanup of stale HKCU entries from older installs admin-free. Verbs only appear in the *legacy* context menu — Shift+right-click, or right-click → "Show more options"; the modern menu requires an IExplorerCommand COM extension which is out of scope for F4. Explorer also caches verb visibility per-user; if newly installed verbs don't show, `taskkill /F /IM explorer.exe & start explorer.exe` (or sign out / sign in for the most stubborn cases). The Finder `pbs -flush` call in the macOS installer makes the equivalent issue invisible on the Mac.
+11. **`time_cli._api()` now raises instead of `sys.exit`.** The HTTP client used to call `sys.exit(1)` on `URLError`. After F4 the failure modes are exposed as `ServiceDownError` and `ApiError` so the hidden `shell-trigger` handler can render a toast notification. CLI handlers (`cmd_start`, `cmd_stop`) are wrapped in the `_exit_on_service_error` decorator to keep the original exit-on-error behavior. `cmd_status` catches both exceptions directly and prints a soft "service not running" line — same UX as before. Any new caller of `_api()` from outside the CLI surface must handle these two exception types.
 
-12. **`time_cli._api()` now raises instead of `sys.exit`.** The HTTP client used to call `sys.exit(1)` on `URLError`. After F4 the failure modes are exposed as `ServiceDownError` and `ApiError` so the hidden `shell-trigger` handler can render a toast notification. CLI handlers (`cmd_start`, `cmd_stop`) are wrapped in the `_exit_on_service_error` decorator to keep the original exit-on-error behavior. `cmd_status` catches both exceptions directly and prints a soft "service not running" line — same UX as before. Any new caller of `_api()` from outside the CLI surface must handle these two exception types.
+12. **macOS `.workflow` XML is hostile to hand-rolling.** The first F4 cut generated `document.wflow` programmatically from a small Python f-string. `pbs` registered the Service and Finder showed the menu item, but clicking did nothing — `WorkflowServiceRunner` would crash with `'Workflow's metaData should be service metaData!'` at `AMWorkflowServiceRunner.m:330`. The runtime expects `workflowMetaData` to look like a fully populated `AMServiceMetaData` dict (with `applicationBundleID`, `applicationPath`, `presentationMode`, `serviceApplicationBundleID`, `serviceProcessesInput`, etc.) and the action dict to carry the full `arguments` mapping that Automator emits. We now ship templates captured from a real Automator-saved Quick Action and substitute only the menu title + the shell command. If you need to update the templates, build a fresh Quick Action in Automator on a Mac and copy `document.wflow` / `Info.plist` over the existing files; do not hand-tune.
 
-13. **macOS `.workflow` XML is hostile to hand-rolling.** The first F4 cut generated `document.wflow` programmatically from a small Python f-string. `pbs` registered the Service and Finder showed the menu item, but clicking did nothing — `WorkflowServiceRunner` would crash with `'Workflow's metaData should be service metaData!'` at `AMWorkflowServiceRunner.m:330`. The runtime expects `workflowMetaData` to look like a fully populated `AMServiceMetaData` dict (with `applicationBundleID`, `applicationPath`, `presentationMode`, `serviceApplicationBundleID`, `serviceProcessesInput`, etc.) and the action dict to carry the full `arguments` mapping that Automator emits. We now ship templates captured from a real Automator-saved Quick Action and substitute only the menu title + the shell command. If you need to update the templates, build a fresh Quick Action in Automator on a Mac and copy `document.wflow` / `Info.plist` over the existing files; do not hand-tune.
-
-14. **Project name slugs transliterate non-ASCII letters via `unidecode`.** `pm._to_ascii()` (called first by both `slug_title()` and `make_slug()`) folds Greek `Κ` → `K`, Cyrillic `П` → `P`, accented Latin `é` → `e`, CJK → its standard romanization, etc. The original cut stripped *everything* outside `[A-Za-z0-9\-_]`, which silently deleted the user's Greek title `Κατάρρευση τιμών έως -40%` and left just `-40` (from `-40%`). With the date suffix that gave a folder named `-40-140526`; the post-push hook then sent `-40-140526` as the CopalVX project name, and because the receiving subprocess uses `argparse.parse_known_args`, the leading `-` was interpreted as a flag — shifting positionals so subsequent pulls reported `No remembered location for project 'v1.0'`. **Principle:** letters get *replaced* (romanized), symbols may be *truncated* — so the slug pipeline always produces a readable, ASCII-only, dash-safe string. `slug_title()`/`make_slug()` also `.strip("-_")` at the end as belt-and-braces protection against degenerate inputs (`"---Hello---"` → `"HELLO"`). `InitScreen._do_create()` additionally rejects names whose slug comes back empty (emoji-only / pure-symbol input) with a `"Project name must contain at least one letter or digit (emojis alone don't count)."` toast; `pm.cmd_init()` does the same up front for the CLI path. The InitScreen form shows a live preview of the resulting ID + CopalVX name as the user types. If you ever swap out the transliteration library, keep the principle: any change that reverts to "strip non-ASCII" will reintroduce the regression.
+13. **Project name slugs transliterate non-ASCII letters via `unidecode`.** `pm._to_ascii()` (called first by both `slug_title()` and `make_slug()`) folds Greek `Κ` → `K`, Cyrillic `П` → `P`, accented Latin `é` → `e`, CJK → its standard romanization, etc. The original cut stripped *everything* outside `[A-Za-z0-9\-_]`, which silently deleted the user's Greek title `Κατάρρευση τιμών έως -40%` and left just `-40` (from `-40%`). With the date suffix that gave a folder named `-40-140526`; the post-push hook then sent `-40-140526` as the CopalVX project name, and because the receiving subprocess uses `argparse.parse_known_args`, the leading `-` was interpreted as a flag — shifting positionals so subsequent pulls reported `No remembered location for project 'v1.0'`. **Principle:** letters get *replaced* (romanized), symbols may be *truncated* — so the slug pipeline always produces a readable, ASCII-only, dash-safe string. `slug_title()`/`make_slug()` also `.strip("-_")` at the end as belt-and-braces protection against degenerate inputs (`"---Hello---"` → `"HELLO"`). `InitScreen._do_create()` additionally rejects names whose slug comes back empty (emoji-only / pure-symbol input) with a `"Project name must contain at least one letter or digit (emojis alone don't count)."` toast; `pm.cmd_init()` does the same up front for the CLI path. The InitScreen form shows a live preview of the resulting ID + CopalVX name as the user types. If you ever swap out the transliteration library, keep the principle: any change that reverts to "strip non-ASCII" will reintroduce the regression.
 
 ---
 
