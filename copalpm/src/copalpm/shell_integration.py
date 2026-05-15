@@ -447,12 +447,17 @@ def cmd_shell_trigger(args) -> int:
                 _notify("Copal", f"No project.yaml found at or above {folder.name}.", kind="error")
                 return 1
             phase = _find_phase_from(folder)
-            _api("POST", "/start", {
+            resp = _api("POST", "/start", {
                 "projectId":   pid,
                 "description": None,
                 "tool":        None,
                 "phase":       phase,
             })
+            stopped_prev = resp.get("stopped_prev") if isinstance(resp, dict) else None
+            if stopped_prev:
+                prev_pid = stopped_prev.get("project_id", "")
+                mins     = int(stopped_prev.get("duration_sec", 0)) // 60
+                _notify("Copal: timer stopped", f"{prev_pid} — {mins} min logged")
             _notify("Copal: timer started", f"{pid}" + (f"  ({phase})" if phase else ""))
             return 0
 
