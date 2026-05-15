@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-from unidecode import unidecode
+from anyascii import anyascii
 
 from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
 
@@ -25,14 +25,15 @@ def _to_ascii(s: str) -> str:
     """Transliterate Unicode to ASCII so the slug pipeline preserves letters.
 
     Greek `Κ` → `K`, `α` → `a`; Cyrillic `П` → `P`; accented Latin `é` → `e`.
-    Symbols and emoji that have no ASCII counterpart are dropped here. The
-    downstream regex strip in `slug_title` / `make_slug` then removes whatever
-    residual punctuation remains.
+    Meaningful symbols are romanized too (`€` → `EUR`, `™` → `TM`).
 
-    See `copalpm/CLAUDE.md` gotcha #13 — undoing this step re-introduces the
-    `-40-140526` bug where Greek input collapsed to symbols-only output.
+    `anyascii` renders emoji as `:shortcode:` (🎉 → `:tada:`); we strip those
+    so emoji-only input collapses to empty and gets caught by the InitScreen
+    guard — preserving the documented "ornamental marks and emoji are dropped"
+    principle. See `copalpm/CLAUDE.md` gotcha #13.
     """
-    return unidecode(s or "")
+    out = anyascii(s or "")
+    return re.sub(r":[a-z0-9_+\-]+:", "", out)
 
 
 def slug_title(title: str) -> str:
