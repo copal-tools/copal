@@ -112,6 +112,11 @@ def test_project_remove_with_id():
     assert args.project_id == "PROJ-FOO-010101"
 
 
+def test_project_doctor():
+    args = _parse(["project", "doctor"])
+    assert args.group == "project" and args.cmd == "doctor"
+
+
 # ── `record` group ────────────────────────────────────────────────────────────
 
 def test_record_show():

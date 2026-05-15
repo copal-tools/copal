@@ -27,6 +27,7 @@ copalpm/
 │   ├── cli.py             # Unified argparse dispatcher (single entry point)
 │   ├── pm.py              # Project registry ops (init/list/status/register/scan/remove/rollup, service install)
 │   ├── project_record.py  # project.yaml ops (show/get/set/phase/validate/sync-time/copalvx-update)
+│   ├── project_doctor.py  # `project doctor` — registry / sessions drift report (read-only)
 │   ├── time_cli.py        # Time tracking client (start/stop/status/log)
 │   ├── task_tracker.py    # Background HTTP daemon (Flask + Waitress, port 5123)
 │   ├── deliver_cli.py     # `deliver` subcommand handler
@@ -58,6 +59,7 @@ copalpm project register <path>    # register an existing folder
 copalpm project scan <dir>         # find + register projects in a tree
 copalpm project remove <id>        # remove from registry (keeps files)
 copalpm project rollup [--json]    # total time per project
+copalpm project doctor             # report registry / sessions drift (read-only)
 
 copalpm record show                # pretty-print this project's record
 copalpm record get <field>         # read field from project.yaml
@@ -234,13 +236,15 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-144 tests:
+154 tests:
 - 12 import tests (every module + handler resolves; no `from project_registry` references remain)
-- 56 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags)
+- 63 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags, `project doctor`)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
 - 6 unit tests for atomic save_yaml (round-trip, header, tmp cleanup, overwrite, concurrent threads, Windows-retry mocked)
+- 7 unit tests for project_doctor helpers (`find_path_drift`, `find_orphan_sessions` — registry/sessions drift detection)
 - 7 integration tests for read-only ops (live binary spawn)
 - 2 Windows-gated integration tests for the registry round-trip (skipped on macOS/Linux)
+- 21 slug/transliteration unit tests, 7 data-dir-migration tests, 7 setup_cmd tests, 6 copalvx_api wrapper tests, 4 Windows-gated shell-integration registry tests
 
 Integration tests auto-skip if the `copalpm` binary is not in the venv.
 

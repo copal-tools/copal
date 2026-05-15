@@ -133,6 +133,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("directory", help="Root directory to scan")
     p_rm = s_proj.add_parser("remove", help="Remove a project from registry (keeps files on disk)")
     p_rm.add_argument("project_id")
+    s_proj.add_parser("doctor",
+                      help="Report registry / sessions drift (read-only)")
 
     # record ─────────────────────────────────────────────────────────────────
     p_rec = groups.add_parser("record", help="Read and write project.yaml fields")
@@ -274,6 +276,9 @@ def main():
             return cmd_scan(Path(args.directory))
         if args.cmd == "remove":
             sys.exit(cmd_remove(args.project_id))
+        if args.cmd == "doctor":
+            from .project_doctor import cmd_doctor
+            return cmd_doctor(args)
 
     if args.group == "record":
         dispatch = {
