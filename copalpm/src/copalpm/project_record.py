@@ -13,7 +13,10 @@
 # Argparse setup lives in cli.py; cmd_* handlers below take an argparse Namespace.
 
 import json
+import os
 import sys
+import threading
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -42,10 +45,35 @@ _YAML_HEADER = (
     "# Reference: schema/project-record.yaml\n\n"
 )
 
+# Transient Windows errors during MoveFileEx — another process or thread
+# briefly holds the destination open (AV scan, indexer, concurrent reader,
+# racing replace). Short backoff + retry is the standard workaround.
+#   32 = ERROR_SHARING_VIOLATION
+#    5 = ERROR_ACCESS_DENIED  (raised when a racing replace is mid-flight)
+_WIN_TRANSIENT_REPLACE_ERRORS = {5, 32}
+
 
 def load_yaml(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def _atomic_replace(tmp: Path, dst: Path) -> None:
+    if sys.platform != "win32":
+        os.replace(tmp, dst)
+        return
+    delay = 0.05
+    for attempt in range(5):
+        try:
+            os.replace(tmp, dst)
+            return
+        except OSError as e:
+            if getattr(e, "winerror", None) not in _WIN_TRANSIENT_REPLACE_ERRORS:
+                raise
+            if attempt == 4:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 def save_yaml(path: Path, record: dict):
@@ -55,7 +83,14 @@ def save_yaml(path: Path, record: dict):
         allow_unicode=True,
         sort_keys=False,
     )
-    path.write_text(content, encoding="utf-8")
+    tmp = path.with_suffix(
+        path.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}"
+    )
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        _atomic_replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ── Project detection ──────────────────────────────────────────────────────────

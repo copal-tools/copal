@@ -36,7 +36,8 @@ copalpm/
 └── tests/
     ├── unit/
     │   ├── test_imports.py     # All modules + handlers import cleanly
-    │   └── test_cli_parser.py  # Every documented argparse invocation
+    │   ├── test_cli_parser.py  # Every documented argparse invocation
+    │   └── test_save_yaml.py   # Atomic save_yaml: round-trip, concurrency, Windows retry
     └── integration/
         └── test_subcommands.py # Spawns `copalpm` binary, exercises read-only ops
 ```
@@ -233,10 +234,11 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-97 tests:
+144 tests:
 - 12 import tests (every module + handler resolves; no `from project_registry` references remain)
 - 56 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
+- 6 unit tests for atomic save_yaml (round-trip, header, tmp cleanup, overwrite, concurrent threads, Windows-retry mocked)
 - 7 integration tests for read-only ops (live binary spawn)
 - 2 Windows-gated integration tests for the registry round-trip (skipped on macOS/Linux)
 
@@ -291,3 +293,4 @@ See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
 - **Robustness > features.** Every external call (subprocess, HTTP) has a timeout + retry policy. Failures degrade gracefully with clear user-facing messages.
 - **Non-fatal hooks.** Anything that talks across the VX/PM boundary is via subprocess and is non-fatal. If `copalvx` isn't on PATH, push/pull options stay greyed in the TUI but the rest of the tool works normally.
 - **File-based persistence.** No database. `project.yaml` is the source of truth per project; the registry is an index; sessions.jsonl is an append-only log. Users can `cat` and `vim` their data.
+- **Atomic YAML writes.** `project_record.save_yaml()` writes to a per-process/per-thread tmp file (`<name>.yaml.tmp.<pid>.<tid>`) in the same directory, then `os.replace`s it into place. A Windows-only retry loop in `_atomic_replace` handles transient `ERROR_SHARING_VIOLATION` (winerror 32) and `ERROR_ACCESS_DENIED` (5) with 5 attempts and exponential back-off (50 → 800 ms, worst case 1.55 s). A `try/finally` removes the tmp file if `os.replace` raises after retry exhaustion, so the only orphaned `*.tmp.*` files visible to users are from hard-kills (SIGKILL / power loss) between the tmp write and the replace — harmless but ugly. `time_cli.cmd_log` calls `save_yaml` directly; do not reintroduce inlined truncate-and-write paths.
