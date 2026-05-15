@@ -2232,11 +2232,22 @@ class ProjectDetailScreen(Screen):
                 if description is None:
                     return  # user cancelled with Esc
                 try:
-                    _service_call("POST", "/start", {
+                    resp = _service_call("POST", "/start", {
                         "projectId":   pid,
                         "description": description or None,
                         "phase":       self._data.get("phase"),
                     })
+                    stopped_prev = resp.get("stopped_prev")
+                    if stopped_prev:
+                        prev_pid = stopped_prev.get("project_id", "")
+                        prev_name = next(
+                            (p.get("name") for p in load_registry() if p.get("id") == prev_pid),
+                            prev_pid,
+                        )
+                        self.notify(
+                            f"{prev_name} — {fmt_h(int(stopped_prev.get('duration_sec', 0)))} logged.",
+                            title="■ Stopped",
+                        )
                     label = f" — {description}" if description else ""
                     self.notify(f"{self._data.get('name','')}{label}", title="● Started")
                 except ServiceUnavailable as e:

@@ -175,7 +175,7 @@ def start():
     if not exists:
         return ({"error": "unknown_project_id", "projectId": pid}, 404)
 
-    stop_current("switch")
+    stopped_prev = stop_current("switch")
 
     cur = {
         "session_id":  f"S-{now():%Y%m%d}-{uuid.uuid4().hex[:6]}",
@@ -188,7 +188,10 @@ def start():
     }
     _write_json(CUR, cur)
     _reset_idle_timer()
-    return {"ok": True, "session_id": cur["session_id"]}
+    resp = {"ok": True, "session_id": cur["session_id"]}
+    if stopped_prev:
+        resp["stopped_prev"] = stopped_prev
+    return resp
 
 
 @app.post("/stop")

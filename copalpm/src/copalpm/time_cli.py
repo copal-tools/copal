@@ -194,6 +194,15 @@ def cmd_start(args):
     }
     resp = _api("POST", "/start", payload)
 
+    stopped_prev = resp.get("stopped_prev")
+    if stopped_prev:
+        prev_pid  = stopped_prev.get("project_id", "")
+        prev_secs = int(stopped_prev.get("duration_sec", 0))
+        print(
+            f"■  Stopped {_project_name(prev_pid)} ({prev_pid}) — "
+            f"{fmt_duration(prev_secs)} logged"
+        )
+
     desc_str  = f"  {args.description}" if args.description else ""
     tool_str  = f"  [{args.tool}]" if args.tool else ""
     phase_str = f"  ({phase})" if phase else ""
