@@ -39,7 +39,7 @@ copal/
 │   ├── NOTICE
 │   ├── pyproject.toml
 │   ├── src/copalpm/  # Python package (single `copalpm` binary)
-│   └── tests/        # pytest suite (141 tests)
+│   └── tests/        # pytest suite (see copalpm/CLAUDE.md for current count)
 ├── LICENSE           # Umbrella Apache 2.0
 ├── NOTICE
 ├── README.md         # Public-facing intro to both packages

@@ -14,6 +14,7 @@
 #   service            — task-tracker background service (install/uninstall/status)
 #   shell-integration  — Explorer / Finder right-click verbs (install/uninstall/status)
 #   deliver            — log a delivered asset
+#   whose              — given a path, report which registered project owns it
 #   task-tracker       — daemon entry point (hidden; invoked by the OS service)
 #   shell-trigger      — handler invoked by the OS shell verbs (hidden)
 
@@ -60,6 +61,7 @@ from .shell_integration import (
     cmd_shell_trigger,
 )
 from .setup_cmd import cmd_setup, cmd_teardown
+from .project_lookup import cmd_whose
 
 
 # ── Parser construction ───────────────────────────────────────────────────────
@@ -218,6 +220,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_del.add_argument("--file", metavar="PATH",
                        help="Explicit path to project.yaml (defaults to CWD walk)")
 
+    # whose ──────────────────────────────────────────────────────────────────
+    p_whose = groups.add_parser(
+        "whose",
+        help="Report which registered project owns a given file or folder",
+    )
+    p_whose.add_argument("path", help="File or folder path to look up")
+    p_whose.add_argument("--json", action="store_true",
+                         help="Emit a JSON object (or `null` on miss) for scripts and editor integrations")
+
     # task-tracker (hidden — daemon entry point invoked by the OS service) ──
     # argparse displays `help=SUPPRESS` subparsers as "==SUPPRESS==" in --help
     # output rather than hiding them. The standard workaround is to drop the
@@ -325,6 +336,9 @@ def main():
 
     if args.group == "teardown":
         return cmd_teardown(args)
+
+    if args.group == "whose":
+        return cmd_whose(args)
 
     # Unreachable — argparse rejects unknown groups before we get here
     ap.error(f"unknown group: {args.group}")
