@@ -271,6 +271,23 @@ CopalPM's outbound calls into CopalVX (when pushing/pulling from the TUI) go thr
 
 ---
 
+## Integration with CopalBlender
+
+The sibling `copalblender/` package (added 2026-05-16) ships a Blender addon that consumes CopalPM via two channels:
+
+| Channel | What it calls |
+|---------|---------------|
+| Subprocess to `copalpm whose --json <path>` | One-shot project lookup on file open. Output schema must match [project_lookup.py:174-194](./src/copalpm/project_lookup.py). |
+| HTTP to the task-tracker daemon (`127.0.0.1:5123`) | `/start`, `/stop`, `/ping`, `/state`, `/health` — same shape as [time_cli._api](./src/copalpm/time_cli.py). Reads `api_key` and `port` from `<copalpm-data-dir>/config.json`. |
+
+The addon vendors a copy of the HTTP client at [copalblender/src/copalblender/assets/addon/copal_blender/copalpm_client.py](../copalblender/src/copalblender/assets/addon/copal_blender/copalpm_client.py) (Blender's bundled Python can't import host site-packages). Any change to the daemon endpoints in [task_tracker.py](./src/copalpm/task_tracker.py) or to `_api`'s exception types must be mirrored in BOTH places.
+
+Gotcha #11 (`time_cli._api()` raises instead of `sys.exit`) is now relied on by an out-of-tree client too — the addon catches `ServiceDownError`, `NotInstalledError`, and `ApiError` distinctly and degrades gracefully.
+
+The addon explicitly sends `tool: "blender"` on `/start` calls; CopalPM logs that in `sessions.jsonl` so users can split rollups by DCC.
+
+---
+
 ## Tests
 
 ```powershell

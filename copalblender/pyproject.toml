@@ -1,0 +1,43 @@
+[project]
+name = "copalblender"
+version = "0.1.0"
+description = "Blender addon installer + plugin for CopalPM time tracking. Auto-starts a session for the project a .blend file belongs to."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "The Copal Tools Authors"}]
+keywords = ["blender", "vfx", "time-tracking", "dcc-integration", "copalpm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://copalpm.app"
+Source = "https://github.com/copal-tools/copal"
+
+[project.scripts]
+copalblender = "copalblender.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/copalblender"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/copalblender/assets" = "copalblender/assets"
+
+[tool.uv]
+dev-dependencies = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-q"
