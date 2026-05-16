@@ -411,6 +411,26 @@ def test_deliver_full():
     assert args.note == "color-corrected"
 
 
+# ── `whose` group ─────────────────────────────────────────────────────────────
+
+def test_whose_requires_path():
+    with pytest.raises(SystemExit):
+        _parse(["whose"])
+
+
+def test_whose_with_path():
+    args = _parse(["whose", "C:/work/alpha/main.py"])
+    assert args.group == "whose"
+    assert args.path == "C:/work/alpha/main.py"
+    assert args.json is False
+
+
+def test_whose_with_json_flag():
+    args = _parse(["whose", "--json", "/tmp/foo.txt"])
+    assert args.path == "/tmp/foo.txt"
+    assert args.json is True
+
+
 # ── Help-text invariants ──────────────────────────────────────────────────────
 
 def test_task_tracker_hidden_from_help(capsys):

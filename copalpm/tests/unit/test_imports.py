@@ -93,6 +93,18 @@ def test_import_copalvx_api():
     assert hasattr(copalvx_api, "run_pull")
 
 
+def test_import_project_lookup():
+    """Public surface for the `copalpm whose <path>` CLI + the primitive."""
+    from copalpm.project_lookup import (
+        ProjectMatch, cmd_whose, find_project_for_path,
+    )
+    assert callable(cmd_whose)
+    assert callable(find_project_for_path)
+    # Dataclass with the five documented fields
+    assert {"project_id", "project_name", "project_root",
+            "drift", "matched_via"}.issubset(set(ProjectMatch.__dataclass_fields__))
+
+
 def test_no_lingering_old_package_name():
     """No file in the installed copalpm should reference `project_registry`."""
     import copalpm
