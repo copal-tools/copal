@@ -41,7 +41,7 @@ copalpm/
     │   ├── test_save_yaml.py   # Atomic save_yaml: round-trip, concurrency, Windows retry
     │   ├── test_time_cli.py    # cmd_log behavioural tests (no daemon required)
     │   ├── test_tui_doctor.py  # _doctor_banner_text + _dashboard_rows drift annotation
-    │   └── test_tui_modal_polish.py  # _pull_dest_invalid validator
+    │   └── test_tui_modal_polish.py  # _pull_dest_invalid + _elide_path
     └── integration/
         └── test_subcommands.py # Spawns `copalpm` binary, exercises read-only ops
 ```
@@ -239,14 +239,14 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-175 tests:
+178 tests:
 - 12 import tests (every module + handler resolves; no `from project_registry` references remain)
 - 63 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags, `project doctor`)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
 - 6 unit tests for atomic save_yaml (round-trip, header, tmp cleanup, overwrite, concurrent threads, Windows-retry mocked)
 - 7 unit tests for project_doctor helpers (`find_path_drift`, `find_orphan_sessions` — registry/sessions drift detection)
 - 9 unit tests for `_doctor_banner_text` and `_dashboard_rows` drift annotation (tui_app doctor wiring; monkeypatches `load_registry`)
-- 9 unit tests for `_pull_dest_invalid` (empty, whitespace, None, relative, dot, absolute, `~`-expansion, existing path, stripping)
+- 9 unit tests for `_pull_dest_invalid` (empty, whitespace, None, relative, dot, absolute, `~`-expansion, existing path, stripping) + 3 for `_elide_path` (middle-eliding long preview paths)
 - 4 unit tests for time_cli.cmd_log (entry written via save_yaml, phase inherited from latest phase_log, no tmp file orphan, header preserved post-refactor)
 - 3 unit tests for time_cli.cmd_start switch formatting (stopped_prev line on switch, omitted when no prior session, short-duration `0m` fallback)
 - 3 unit tests for task_tracker /start switch response (stopped_prev attached on switch, omitted on first start, 404 leaves current session intact)

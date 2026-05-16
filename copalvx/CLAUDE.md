@@ -394,7 +394,13 @@ Key bindings in `ProjectDetailScreen`:
 - Background thread fetches server versions + project list together every 60s
 - `↑` shown in yellow next to project name when server version differs from local record
 
-### Dashboard redesign (COMPLETE, 2026-05-07)
+### Dashboard redesign (SUPERSEDED, 2026-05-16)
+
+> **Note (2026-05-16):** The `ProjectRow`-widget design described below was
+> reverted. `DashboardScreen` in `copalpm/src/copalpm/tui_app.py` now uses
+> a Textual `DataTable` again with cell-click dispatch (column 0 opens the
+> project, columns 1/2/3 are `📁`/`▲`/`▼` actions) and `O`/`P`/`L` row
+> keybindings. The historical content below is kept for context only.
 
 Replaced `DataTable` with a scrollable list of `ProjectRow` widgets in `DashboardScreen`.
 
