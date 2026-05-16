@@ -181,6 +181,23 @@ def _pull_dest_invalid(raw: str) -> str | None:
     return None
 
 
+def _elide_path(path: str, max_chars: int = 50) -> str:
+    """Middle-elide a path so head and tail are preserved.
+
+    The PullDestinationModal preview line lives inside a 70-col modal box
+    (1 2 padding) with a 16-char `"Will pull into: "` prefix — long paths
+    wrap and shove the modal taller mid-typing. Eliding the middle keeps
+    the project-name suffix visible (what the user cares about) while
+    the full path stays available in the Input above.
+    """
+    if len(path) <= max_chars:
+        return path
+    keep     = max_chars - 3                  # room for "..."
+    head_len = keep // 2
+    tail_len = keep - head_len
+    return f"{path[:head_len]}...{path[-tail_len:]}"
+
+
 def _doctor_banner_text(drift_count: int, orphan_count: int) -> str | None:
     """Banner string for the Dashboard. None when there's nothing to surface."""
     if not drift_count and not orphan_count:
@@ -421,7 +438,8 @@ class InitScreen(Screen):
                 yield Label("Project folder", classes="field-label")
                 with Horizontal(id="dir-row"):
                     yield Input(id="dir-input")
-                    yield Button("📁", id="dir-browse")
+                    yield Button("📁", id="dir-browse",
+                                 tooltip="Browse for project folder")
                 yield Checkbox("Append _NNN suffix to folder name", id="inc-check")
             with Horizontal(id="init-buttons"):
                 yield Button("Create", variant="primary", id="btn-create")
@@ -564,108 +582,15 @@ class InitScreen(Screen):
             self.notify(str(e), title="Create failed", severity="error")
 
 
-class ProjectRow(Widget):
-    """One project entry in the dashboard list."""
-
-    can_focus = True
-
-    class Selected(Message):
-        def __init__(self, project: dict) -> None:
-            super().__init__()
-            self.project = project
-
-    class OpenFolder(Message):
-        def __init__(self, path: str) -> None:
-            super().__init__()
-            self.path = path
-
-    class PushRequested(Message):
-        def __init__(self, project: dict) -> None:
-            super().__init__()
-            self.project = project
-
-    class PullRequested(Message):
-        def __init__(self, project: dict) -> None:
-            super().__init__()
-            self.project = project
-
-    DEFAULT_CSS = """
-    ProjectRow {
-        height: 3;
-        padding: 0 1;
-        layout: horizontal;
-        align: left middle;
-        background: $surface;
-        border-bottom: solid $panel;
-    }
-    ProjectRow:focus {
-        background: $surface-lighten-1;
-        border-left: tall $accent;
-    }
-    ProjectRow.-server-only { color: $text-muted; }
-    ProjectRow.-stale { color: $text-muted; }
-    ProjectRow #row-name { width: 1fr; }
-    ProjectRow Button { margin-left: 1; min-width: 5; }
-    ProjectRow #btn-open-folder { min-width: 13; }
-    """
-
-    def __init__(self, project: dict, has_update: bool = False) -> None:
-        classes = []
-        if project.get("is_server_only"):
-            classes.append("-server-only")
-        if project.get("drift_reason"):
-            classes.append("-stale")
-        super().__init__(classes=" ".join(classes))
-        self._project   = project
-        self._has_update = has_update
-
-    def compose(self) -> ComposeResult:
-        name     = self._project.get("name", "?")
-        is_stale = bool(self._project.get("drift_reason"))
-        if is_stale:
-            name = f"[yellow]⚠[/yellow] {name}"
-        if self._has_update:
-            name = f"{name} [yellow]↑[/yellow]"
-        yield Label(name, id="row-name")
-
-        path     = self._project.get("path")
-        cvx_name = self._project.get("cvx_name")
-        is_so    = self._project.get("is_server_only", False)
-
-        if path and not is_stale:
-            yield Button("Open Folder", id="btn-open-folder")
-        if cvx_name and not is_so and not is_stale:
-            yield Button("▲", id="btn-push")
-        if cvx_name:
-            yield Button("▼", id="btn-pull")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        event.stop()
-        bid = event.button.id
-        if bid == "btn-open-folder":
-            self.post_message(self.OpenFolder(self._project.get("path", "")))
-        elif bid == "btn-push":
-            self.post_message(self.PushRequested(self._project))
-        elif bid == "btn-pull":
-            self.post_message(self.PullRequested(self._project))
-
-    def on_click(self, event) -> None:
-        if getattr(event, "widget", None) is not self:
-            return  # click was on a child button — ignore at row level
-        self.post_message(self.Selected(self._project))
-
-    def on_key(self, event) -> None:
-        if event.key == "enter":
-            self.post_message(self.Selected(self._project))
-            event.stop()
-
-
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_project",      "New project"),
         Binding("t", "manage_templates", "Templates"),
         Binding("d", "open_doctor",      "Doctor"),
         Binding("r", "refresh",          "Refresh"),
+        Binding("o", "open_folder",      "Open folder"),
+        Binding("p", "push",             "Push"),
+        Binding("l", "pull",             "Pull"),
         Binding("q", "app.quit",         "Quit"),
     ]
 
@@ -675,6 +600,14 @@ class DashboardScreen(Screen):
         color: $warning;
         padding: 0 1;
         height: 1;
+    }
+    #project-table {
+        height: 1fr;
+    }
+    #empty-state {
+        height: 1fr;
+        padding: 4 2;
+        content-align: center middle;
     }
     """
 
@@ -692,28 +625,36 @@ class DashboardScreen(Screen):
         banner = Static("", id="doctor-banner")
         banner.display = False
         yield banner
-        yield ScrollableContainer(id="project-list")
+        yield DataTable(id="project-table", cursor_type="cell", zebra_stripes=True)
+        empty = Static("", id="empty-state")
+        empty.display = False
+        yield empty
         yield Footer()
 
     def on_mount(self) -> None:
         self._session_cache: dict | None = None
         self._stop_session_poller = threading.Event()
+        self._row_data: dict[str, dict] = {}
+        self._ordered_keys: list[str]   = []
+        table = self.query_one("#project-table", DataTable)
+        table.add_columns("Project", "📁", "▲", "▼")
         self._refresh_data()
         self.set_interval(1,  self._tick_timer)
         self.set_interval(30, self._refresh_data)
         self.set_interval(60, self._poll_server)
         threading.Thread(target=self._fetch_server_data, daemon=True).start()
         threading.Thread(target=self._session_poll_loop, daemon=True).start()
-        # Focus the first project row instead of the search input. Otherwise
-        # Textual auto-focuses the first focusable widget (the search Input),
-        # which then captures arrow keys for text-cursor movement instead of
-        # row navigation. Users can click the search box or Tab to it to type.
+        # Focus the DataTable rather than the search input. Otherwise Textual
+        # auto-focuses the first focusable widget (the search Input), which
+        # captures arrow keys for text-cursor movement instead of row
+        # navigation. Users can click the search box or Tab to it to type.
         self.call_after_refresh(self._focus_first_row)
 
     def _focus_first_row(self) -> None:
-        rows = list(self.query(ProjectRow))
-        if rows:
-            rows[0].focus()
+        table = self.query_one("#project-table", DataTable)
+        table.focus()
+        if table.row_count:
+            table.move_cursor(row=0, column=0)
 
     def on_unmount(self) -> None:
         self._stop_session_poller.set()
@@ -746,10 +687,14 @@ class DashboardScreen(Screen):
         banner.display = True
 
     def _rebuild_list(self) -> None:
-        query     = self.query_one("#search-input", Input).value.strip().lower()
-        inc_srv   = self.query_one("#server-check", Checkbox).value
-        container = self.query_one("#project-list", ScrollableContainer)
-        container.remove_children()
+        query   = self.query_one("#search-input", Input).value.strip().lower()
+        inc_srv = self.query_one("#server-check", Checkbox).value
+        table   = self.query_one("#project-table", DataTable)
+        empty   = self.query_one("#empty-state",   Static)
+
+        table.clear()
+        self._row_data.clear()
+        self._ordered_keys.clear()
 
         local_cvx = {r["cvx_name"] for r in self._local_rows if r.get("cvx_name")}
 
@@ -775,40 +720,78 @@ class DashboardScreen(Screen):
                 })
 
         if not local and not server_only:
-            container.mount(self._empty_state(has_query=bool(query)))
+            table.display = False
+            empty.display = True
+            if query:
+                empty.update(
+                    "[dim]No projects match your search.[/dim]\n"
+                    "[dim]Clear the search box to see everything.[/dim]"
+                )
+            elif self._local_rows:
+                empty.update(
+                    "[dim]No projects match your filters.[/dim]\n"
+                    "[dim]Toggle the 'Server projects' checkbox or clear the search.[/dim]"
+                )
+            else:
+                empty.update(
+                    "No projects yet.\n\n"
+                    "[dim]Press[/dim] [b]N[/b] [dim]to create your first project,"
+                    " or wait for server projects to load.[/dim]"
+                )
             return
+
+        table.display = True
+        empty.display = False
 
         for row in local:
             svr        = self._cvx_latest.get(row.get("cvx_name")) if row.get("cvx_name") else None
             has_update = bool(svr and svr != row.get("cvx_local_version"))
-            container.mount(ProjectRow(row, has_update=has_update))
+            self._add_table_row(row, has_update=has_update)
 
-        if server_only:
-            container.mount(Rule())
         for row in server_only:
-            container.mount(ProjectRow(row))
+            self._add_table_row(row, has_update=False)
 
-    def _empty_state(self, has_query: bool) -> Static:
-        if has_query:
-            text = (
-                "[dim]No projects match your search.[/dim]\n"
-                "[dim]Clear the search box to see everything.[/dim]"
-            )
-        elif self._local_rows:
-            text = (
-                "[dim]No projects match your filters.[/dim]\n"
-                "[dim]Toggle the 'Server projects' checkbox or clear the search.[/dim]"
-            )
-        else:
-            text = (
-                "No projects yet.\n\n"
-                "[dim]Press[/dim] [b]N[/b] [dim]to create your first project,"
-                " or wait for server projects to load.[/dim]"
-            )
-        widget = Static(text, id="empty-state")
-        widget.styles.padding = (4, 2)
-        widget.styles.content_align = ("center", "middle")
-        return widget
+    def _add_table_row(self, project: dict, has_update: bool) -> None:
+        """Append one project to the DataTable and register it in `_row_data`."""
+        is_stale = bool(project.get("drift_reason"))
+        is_so    = bool(project.get("is_server_only"))
+        name     = project.get("name", "?")
+        path     = project.get("path")
+        cvx_name = project.get("cvx_name")
+
+        name_cell = f"⚠ {name}" if is_stale else name
+        if has_update:
+            name_cell = f"{name_cell} ↑"
+
+        folder_cell = "📁" if (path and not is_stale) else "·"
+        push_cell   = "▲"  if (cvx_name and not is_so and not is_stale) else "·"
+        pull_cell   = "▼"  if cvx_name else "·"
+
+        # Row-level dim styling for stale and server-only rows. DataTable
+        # row-label classes are limited, so we wrap each cell explicitly.
+        if is_stale or is_so:
+            name_cell   = f"[dim]{name_cell}[/dim]"
+            folder_cell = f"[dim]{folder_cell}[/dim]"
+            push_cell   = f"[dim]{push_cell}[/dim]"
+            pull_cell   = f"[dim]{pull_cell}[/dim]"
+
+        pid     = project.get("id")
+        row_key = f"local:{pid}" if pid else f"srv:{cvx_name or name}"
+
+        # DataTable cell content is top-aligned by default. For true vertical
+        # centering, the row needs an odd height (so there is a middle line)
+        # and each cell content gets a leading newline so the visible text
+        # lands on row line 1 of 3 — empty line above, empty line below.
+        table = self.query_one("#project-table", DataTable)
+        table.add_row(
+            f"\n{name_cell}",
+            f"\n{folder_cell}",
+            f"\n{push_cell}",
+            f"\n{pull_cell}",
+            height=3, key=row_key,
+        )
+        self._row_data[row_key] = project
+        self._ordered_keys.append(row_key)
 
     def _poll_server(self) -> None:
         threading.Thread(target=self._fetch_server_data, daemon=True).start()
@@ -834,9 +817,13 @@ class DashboardScreen(Screen):
     def _tick_timer(self) -> None:
         session = self._session_cache
         if session:
-            pid    = session.get("project_id", "")
-            name   = next((r["name"] for r in self._local_rows if r["id"] == pid), pid)
-            self.app.title = f"PM  ●  {name}  {_elapsed(session.get('start', ''))}"
+            pid     = session.get("project_id", "")
+            name    = next((r["name"] for r in self._local_rows if r["id"] == pid), pid)
+            elapsed = _elapsed(session.get("start", ""))
+            if name and name != pid:
+                self.app.title = f"PM  ●  {pid}  ▸  {name}  {elapsed}"
+            else:
+                self.app.title = f"PM  ●  {pid}  {elapsed}"
         else:
             self.app.title = "PM"
 
@@ -850,43 +837,61 @@ class DashboardScreen(Screen):
         if event.checkbox.id == "server-check":
             self._rebuild_list()
 
-    def on_key(self, event) -> None:
-        rows = list(self.query(ProjectRow))
-        if not rows:
-            return
-        focused = self.focused
-        if event.key == "down":
-            idx = (rows.index(focused) + 1) if focused in rows else 0
-            rows[min(idx, len(rows) - 1)].focus()
-            event.stop()
-        elif event.key == "up":
-            idx = (rows.index(focused) - 1) if focused in rows else 0
-            rows[max(idx, 0)].focus()
-            event.stop()
+    # ── Row dispatch ──────────────────────────────────────────────────────────
+    #
+    # The dashboard's project table is a DataTable with cursor_type="cell".
+    # Clicking a cell fires CellSelected; the column index decides which
+    # action runs. P/L/O keybindings reuse the same handlers against the
+    # cursor row, so mouse and keyboard paths share code.
 
-    def on_project_row_selected(self, event: ProjectRow.Selected) -> None:
-        if event.project.get("is_server_only"):
-            # Same flow as clicking the ▼ button — opens the pull-destination
-            # picker because server-only rows have no local path yet.
-            self._start_pull_flow(event.project)
+    def _focused_project(self) -> dict | None:
+        table = self.query_one("#project-table", DataTable)
+        row   = table.cursor_row
+        if row is None or row < 0 or row >= len(self._ordered_keys):
+            return None
+        return self._row_data.get(self._ordered_keys[row])
+
+    def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        row_key = event.cell_key.row_key
+        # Textual wraps the key in a RowKey object; .value is the string we set.
+        key     = getattr(row_key, "value", row_key)
+        project = self._row_data.get(key)
+        if not project:
             return
-        if event.project.get("drift_reason"):
+        col = event.coordinate.column
+        if   col == 0: self._handle_row_open(project)
+        elif col == 1: self._handle_open_folder(project)
+        elif col == 2: self._handle_push(project)
+        elif col == 3: self._handle_pull(project)
+
+    def _handle_row_open(self, project: dict) -> None:
+        if project.get("is_server_only"):
+            # Same flow as clicking the ▼ cell — opens the pull-destination
+            # picker because server-only rows have no local path yet.
+            self._start_pull_flow(project)
+            return
+        if project.get("drift_reason"):
             self.notify(
                 "Folder missing — press [D] for cleanup options.",
                 title="Stale registry entry",
                 severity="warning",
             )
             return
-        self.app.push_screen(ProjectDetailScreen(event.project))
+        self.app.push_screen(ProjectDetailScreen(project))
 
-    def on_project_row_open_folder(self, event: ProjectRow.OpenFolder) -> None:
-        _open_folder(event.path)
+    def _handle_open_folder(self, project: dict) -> None:
+        path = project.get("path")
+        if path:
+            _open_folder(path)
 
-    def on_project_row_push_requested(self, event: ProjectRow.PushRequested) -> None:
-        project  = event.project
+    def _handle_push(self, project: dict) -> None:
         cvx_name = project.get("cvx_name", "")
         path     = project.get("path", "")
-        versions = copalvx_api.get_versions(cvx_name)
+        if (not cvx_name or not path
+                or project.get("is_server_only")
+                or project.get("drift_reason")):
+            return
+        versions  = copalvx_api.get_versions(cvx_name)
         suggested = _cvx_next_tag(versions)
 
         def on_confirm(result: dict | None) -> None:
@@ -907,8 +912,10 @@ class DashboardScreen(Screen):
 
         self.app.push_screen(CopalVXPushModal(cvx_name, suggested), on_confirm)
 
-    def on_project_row_pull_requested(self, event: ProjectRow.PullRequested) -> None:
-        self._start_pull_flow(event.project)
+    def _handle_pull(self, project: dict) -> None:
+        if not project.get("cvx_name"):
+            return
+        self._start_pull_flow(project)
 
     def _start_pull_flow(self, project: dict) -> None:
         cvx_name = project.get("cvx_name", "")
@@ -1017,6 +1024,21 @@ class DashboardScreen(Screen):
     def action_open_doctor(self) -> None:
         self.app.push_screen(DoctorModal(), self._on_doctor_dismiss)
 
+    def action_open_folder(self) -> None:
+        project = self._focused_project()
+        if project:
+            self._handle_open_folder(project)
+
+    def action_push(self) -> None:
+        project = self._focused_project()
+        if project:
+            self._handle_push(project)
+
+    def action_pull(self) -> None:
+        project = self._focused_project()
+        if project:
+            self._handle_pull(project)
+
     def _on_doctor_dismiss(self, _result) -> None:
         # Entries may have been dropped or re-registered — reload.
         self._refresh_data()
@@ -1109,7 +1131,8 @@ class PullDestinationModal(ModalScreen):
             yield Label("Parent folder (this machine):")
             with Horizontal(id="pull-dest-row"):
                 yield Input(value=self._default_parent, id="pull-dest-input")
-                yield Button("\U0001F4C1", id="pull-dest-browse")
+                yield Button("\U0001F4C1", id="pull-dest-browse",
+                             tooltip="Browse for parent folder")
             yield Static("", id="pull-dest-preview")
             yield Static(
                 "[dim]The project folder is created inside the parent.[/dim]",
@@ -1155,8 +1178,8 @@ class PullDestinationModal(ModalScreen):
 
     def _preview_text(self, parent_raw: str) -> str:
         parent_raw = (parent_raw or "").strip()
-        target = Path(parent_raw).expanduser() / self._project_name
-        return f"[dim]Will pull into:[/dim] {target}"
+        target     = Path(parent_raw).expanduser() / self._project_name
+        return f"[dim]Will pull into:[/dim] {_elide_path(str(target))}"
 
     def _confirm(self) -> None:
         raw = self.query_one("#pull-dest-input", Input).value
@@ -2234,11 +2257,12 @@ class ProjectDetailScreen(Screen):
 
     def _tick_timer(self) -> None:
         session = self._session_cache
+        name    = self._data.get("name", "")
         if session and session.get("project_id") == self._data.get("id"):
             elapsed        = _elapsed(session.get("start", ""))
-            self.app.title = f"{self._data.get('name', '')}  ●  {elapsed}"
+            self.app.title = f"●  {name}  {elapsed}"
         else:
-            self.app.title = self._data.get("name", "")
+            self.app.title = f"⊘  {name}"
 
     def action_refresh(self) -> None:
         self._refresh_data()
