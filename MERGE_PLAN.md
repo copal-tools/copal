@@ -153,3 +153,36 @@ These are real follow-ons but should not block or be bundled with the rebrand:
 - The subprocess contract between CopalVX and CopalPM is the only cross-package coupling. After Phase 2 all calls go through the single `copalpm` binary; pre-rebrand `pm`/`project`/`tt` invocations from anywhere outside this repo will break.
 - Per CLAUDE.md gotcha #7: `client_path` is required and not auto-detectable. Phase 4 must update existing users' `~/.copal/config.json` (or document the breakage).
 - Per CLAUDE.md gotcha #18: anyone with a pre-rebrand background service installed must run the old `pm uninstall-service` before installing the new `copalpm service install` — the old service points at a binary that no longer exists.
+
+---
+
+### Phase 8 — Blender plugin (`copalblender`) (2026-05-16)
+
+Third sibling package added alongside `copalvx/` and `copalpm/`. Ships a Blender addon that auto-starts CopalPM time tracking for the project a `.blend` file belongs to.
+
+**Decisions locked in:**
+
+| Decision | Value |
+|----------|-------|
+| Package shape | Standalone sibling `copalblender/`. Future Maya/Houdini/Nuke plugins: revisit umbrella structure when the second DCC actually arrives. YAGNI. |
+| Transport | Hybrid — subprocess to `copalpm whose --json` for one-shot lookups; direct HTTP to `127.0.0.1:5123` for `/start`/`/stop`/`/ping`/`/state`. |
+| Stop policy | (a) Blender quit. (b) File close (switching to a file in a different project or no project). (c) Unfocus ≥ 5 min. (d) Cursor static across N consecutive ticks. Periodic `/ping` keeps the daemon's idle timer fresh while a session is active. |
+| Install target | Every Blender version under the OS-standard user config dir. CLI: `copalblender install`, `copalblender uninstall`, `copalblender status`. |
+| Addon Python | Pure-Python sides (`tracker`, `copalpm_client`, `activity`) import-safe outside Blender so they unit-test from host pytest. `__init__.py`, `preferences.py`, `status_panel.py` keep `bpy` at module scope. |
+
+**Deliverables (✅ shipped 2026-05-16):**
+
+- `copalblender/` package: `pyproject.toml`, README, LICENSE, NOTICE, CLAUDE.md.
+- `src/copalblender/cli.py` — install / uninstall / status subcommands.
+- `src/copalblender/installer.py` — per-OS detection of all installed Blender versions, atomic copytree-based install/uninstall.
+- `src/copalblender/platform_paths.py` — per-OS CopalPM config path + Blender user-config root, mirrors [copalpm/src/copalpm/config.py:11-17](copalpm/src/copalpm/config.py).
+- `src/copalblender/assets/addon/copal_blender/` — the Blender addon, copied verbatim into each Blender's `scripts/addons/`. Modules: `__init__.py`, `tracker.py`, `copalpm_client.py`, `activity.py`, `preferences.py`, `status_panel.py`.
+- Tests: 93 unit + 4 integration. State machine drives every spec scenario (file load / save / close, tick with cursor still + moved + None, unfocus above/below threshold, refocus reset, focus unknown, idle resume, quit). HTTP client mirrors `time_cli._api` semantics including `URLError → ServiceDownError` and `HTTPError → ApiError` with JSON error-field extraction.
+
+**Risks / open items:**
+
+- macOS PyObjC isn't shipped in Blender's bundled Python — the cursor-static check degrades to "skip" on macOS. Unfocus + file-close + quit triggers still fire.
+- Linux Wayland sessions block xdotool — cursor + focus return `None`. Only file-close + quit triggers fire there. README documents this.
+- Blender launched from Finder on macOS has a stripped PATH — `copalpm_client._resolve_copalpm` falls through to a hardcoded list (`~/.local/bin/copalpm`, `/usr/local/bin/copalpm`, `/opt/homebrew/bin/copalpm`) and exposes an addon preference for an explicit override.
+
+**Cross-package contract:** any change to `/start`/`/stop`/`/ping`/`/state` in [copalpm/src/copalpm/task_tracker.py](copalpm/src/copalpm/task_tracker.py) must be mirrored in both [copalpm/src/copalpm/time_cli.py](copalpm/src/copalpm/time_cli.py) *and* [copalblender/src/copalblender/assets/addon/copal_blender/copalpm_client.py](copalblender/src/copalblender/assets/addon/copal_blender/copalpm_client.py). Add to the `/copal-cross-package` checklist when next touched.

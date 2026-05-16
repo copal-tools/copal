@@ -1,21 +1,22 @@
 # CLAUDE.md — Copal Tools (monorepo umbrella)
 
 > Read this first for orientation across the monorepo.
-> Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md) and [copalpm/CLAUDE.md](./copalpm/CLAUDE.md).
-> Last updated: 2026-05-15 (Wave 3 — legacy `project-registry/` migration shim removed).
+> Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md), [copalpm/CLAUDE.md](./copalpm/CLAUDE.md), and [copalblender/CLAUDE.md](./copalblender/CLAUDE.md).
+> Last updated: 2026-05-16 (Phase 8 — `copalblender` sibling package shipped).
 
 ---
 
 ## What this repo is
 
-Two independently usable open-source tools that pair for media/VFX production workflows:
+Three independently usable open-source tools that pair for media/VFX production workflows:
 
 | Package | Purpose |
 |---------|---------|
 | [copalvx](./copalvx/) | Content-addressable version exchange — push/pull large file folders to a central server, versioned. FastAPI + PostgreSQL + SeaweedFS server; Python client (CLI + terminal dashboard). |
 | [copalpm](./copalpm/) | Terminal project management + time tracking. File-based (`project.yaml` per project + JSON registry). Optional integration with CopalVX. |
+| [copalblender](./copalblender/) | Blender addon installer + plugin. Auto-starts CopalPM time tracking for the project a `.blend` file belongs to. Stops on Blender quit, file close, prolonged unfocus, or cursor inactivity. |
 
-Either can be installed standalone. CopalVX's `pm_hooks` integration with CopalPM is opt-in (activates only when `copalpm` is on PATH).
+Either can be installed standalone. CopalVX's `pm_hooks` integration with CopalPM is opt-in (activates only when `copalpm` is on PATH). CopalBlender's tracking is a no-op when CopalPM is missing or its daemon is down — Blender keeps working normally.
 
 License: Apache 2.0 — see [LICENSE](./LICENSE), [NOTICE](./NOTICE).
 
@@ -25,26 +26,35 @@ License: Apache 2.0 — see [LICENSE](./LICENSE), [NOTICE](./NOTICE).
 
 ```
 copal/
-├── copalvx/          # CopalVX package
-│   ├── CLAUDE.md     # CopalVX-specific architecture, API, gotchas
-│   ├── README.md     # User-facing install + usage
-│   ├── LICENSE       # Per-package Apache 2.0 (allows standalone redistribution)
+├── copalvx/              # CopalVX package
+│   ├── CLAUDE.md         # CopalVX-specific architecture, API, gotchas
+│   ├── README.md         # User-facing install + usage
+│   ├── LICENSE           # Per-package Apache 2.0 (allows standalone redistribution)
 │   ├── NOTICE
-│   ├── client/       # Python client — installable via uv tool install
-│   └── server/       # Docker Compose stack (FastAPI + Postgres + SeaweedFS)
-├── copalpm/          # CopalPM package
-│   ├── CLAUDE.md     # CopalPM-specific layout, CLI surface, gotchas
-│   ├── README.md     # User-facing install + usage
-│   ├── LICENSE       # Per-package Apache 2.0
+│   ├── client/           # Python client — installable via uv tool install
+│   └── server/           # Docker Compose stack (FastAPI + Postgres + SeaweedFS)
+├── copalpm/              # CopalPM package
+│   ├── CLAUDE.md         # CopalPM-specific layout, CLI surface, gotchas
+│   ├── README.md         # User-facing install + usage
+│   ├── LICENSE           # Per-package Apache 2.0
 │   ├── NOTICE
 │   ├── pyproject.toml
-│   ├── src/copalpm/  # Python package (single `copalpm` binary)
-│   └── tests/        # pytest suite (see copalpm/CLAUDE.md for current count)
-├── LICENSE           # Umbrella Apache 2.0
+│   ├── src/copalpm/      # Python package (single `copalpm` binary)
+│   └── tests/            # pytest suite (see copalpm/CLAUDE.md for current count)
+├── copalblender/         # CopalBlender package — Blender addon + installer
+│   ├── CLAUDE.md         # CopalBlender-specific architecture, gotchas
+│   ├── README.md         # User-facing install + usage
+│   ├── LICENSE
+│   ├── NOTICE
+│   ├── pyproject.toml
+│   ├── src/copalblender/ # `copalblender install|uninstall|status` CLI
+│   │   └── assets/addon/copal_blender/  # The Blender addon, copied into scripts/addons/
+│   └── tests/            # pytest suite (93 unit + 4 integration)
+├── LICENSE               # Umbrella Apache 2.0
 ├── NOTICE
-├── README.md         # Public-facing intro to both packages
-├── MERGE_PLAN.md     # Historical record of the rebrand/monorepo migration
-└── CLAUDE.md         # You are here
+├── README.md             # Public-facing intro to all three packages
+├── MERGE_PLAN.md         # Historical record of the rebrand/monorepo migration + post-rebrand phases
+└── CLAUDE.md             # You are here
 ```
 
 History from both source repos is preserved (subtree merge, not squash):
@@ -75,6 +85,9 @@ uv run --directory copalpm pytest
 
 # CopalVX (requires server up for integration tests; unit tests run standalone)
 cd copalvx/client && uv run pytest
+
+# CopalBlender
+uv run --directory copalblender pytest
 ```
 
 ---
@@ -97,6 +110,7 @@ For working directory-specific config:
 | Phase 5 (public launch readiness — CI, real PyPI releases, archive old repos) | ⏳ Pending (legacy migration shim removed 2026-05-15) |
 | Phase 6 (feature work: folder picker, pull-dest memory, push/pull activity log, server hardening, OS triggers) | ✅ Complete |
 | Phase 7 (auth on CopalVX server) | ⏳ Deferred, LAN-only system |
+| Phase 8 (`copalblender` Blender addon — DCC time-tracking integration) | ✅ Complete (2026-05-16) |
 | Figma UI redesign for CopalPM | ⏳ User-driven, separate |
 
 **Phase 6 — feature work (2026-05-13).** Four CopalVX/CopalPM features and a
@@ -127,6 +141,19 @@ server-deployment overhaul. Shipped:
   not running" as a toast instead of a hard exit. See
   [copalpm/CLAUDE.md](./copalpm/CLAUDE.md) "Shell integration" for details.
 
+**Phase 8 — Blender plugin (2026-05-16).** New sibling package
+[`copalblender/`](./copalblender/) ships a Blender addon that auto-starts
+a CopalPM time-tracking session for the project a `.blend` belongs to.
+Stops on Blender quit, file close (including switching to a file in a
+different project or no project), prolonged unfocus (≥5 min default), or
+cursor inactivity (2 consecutive ticks with no movement, default). Uses
+the hybrid transport: subprocess to `copalpm whose --json` for one-shot
+project lookup, direct HTTP to `127.0.0.1:5123` for `/start`/`/stop`/`/ping`/
+`/state`. `copalblender install` copies the addon into every detected
+Blender version's `scripts/addons/copal_blender/`. 93 unit + 4 integration
+tests. See [copalblender/CLAUDE.md](./copalblender/CLAUDE.md) for
+architecture and gotchas.
+
 Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
 - Archive old standalone repos
 
@@ -140,7 +167,7 @@ Quick references:
 - **Slash commands** — `/copal-status`, `/copal-test`, `/copal-deploy`, `/copal-phase-open`, `/copal-phase-close`, `/copal-handoff`, `/copal-gotcha-check`, `/copal-doc-check`. Defined under [.claude/commands/](./.claude/commands/).
 - **Subagents** — `copal-gotcha-reviewer`, `copal-doc-curator`, `copal-cross-package`. Defined under [.claude/agents/](./.claude/agents/).
 - **Standard work loop** — explore → plan → implement → test (`/copal-test`) → docs (`/copal-doc-check`) → commit → optional handoff (`/copal-handoff`).
-- **Cross-package contract** — any change touching `copalvx/client/copal_core/pm_hooks.py` or `copalpm/src/copalpm/copalvx_api.py` must run `/copal-cross-package` (invokes the cross-package subagent) and update both packages' CLAUDE.md in the same commit.
+- **Cross-package contract** — any change touching `copalvx/client/copal_core/pm_hooks.py` or `copalpm/src/copalpm/copalvx_api.py` must run `/copal-cross-package` (invokes the cross-package subagent) and update both packages' CLAUDE.md in the same commit. Similarly, any change to the daemon HTTP endpoints in `copalpm/src/copalpm/task_tracker.py` must be mirrored in BOTH `copalpm/src/copalpm/time_cli.py` (CopalPM client) AND `copalblender/src/copalblender/assets/addon/copal_blender/copalpm_client.py` (the addon's vendored copy).
 
 ### Where does each fact live?
 
@@ -165,5 +192,7 @@ Anti-patterns: don't duplicate the same fact across CLAUDE.md and memory; remove
 If you're working on:
 - **CopalVX (server, client, push/pull, API)** → [copalvx/CLAUDE.md](./copalvx/CLAUDE.md)
 - **CopalPM (project registry, time tracking, TUI)** → [copalpm/CLAUDE.md](./copalpm/CLAUDE.md)
+- **CopalBlender (Blender addon + installer)** → [copalblender/CLAUDE.md](./copalblender/CLAUDE.md)
+- **A new DCC plugin (Maya / Houdini / Nuke / ...)** → "Template for future DCC plugins" in [copalblender/CLAUDE.md](./copalblender/CLAUDE.md). copalblender is the reference implementation.
 - **The migration history / lessons learned** → [MERGE_PLAN.md](./MERGE_PLAN.md)
 - **The Claude scaffolding (workflow, slash commands, subagents)** → [WORKFLOW.md](./WORKFLOW.md)
