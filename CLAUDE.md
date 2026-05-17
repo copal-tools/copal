@@ -2,7 +2,7 @@
 
 > Read this first for orientation across the monorepo.
 > Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md), [copalpm/CLAUDE.md](./copalpm/CLAUDE.md), and [copalblender/CLAUDE.md](./copalblender/CLAUDE.md).
-> Last updated: 2026-05-16 (Phase 8 — `copalblender` sibling package shipped).
+> Last updated: 2026-05-17 (CopalPM templates rebuilt as dynamic-fields per-file YAMLs; shareable via `copalpm template export/import`).
 
 ---
 

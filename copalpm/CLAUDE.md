@@ -91,12 +91,19 @@ copalpm shell-integration uninstall # remove the OS shell verbs
 copalpm shell-integration status    # show installed/missing state
 
 copalpm deliver <path> [...]       # log a delivered asset
+
+copalpm template list [--json]              # installed templates
+copalpm template export <id> [--out PATH]   # write a template's YAML to a file
+copalpm template import <path> [--force]    # validate + install a template YAML
+
 copalpm task-tracker               # daemon entry point (hidden — invoked by the OS service)
 copalpm shell-trigger {start|stop|new-project} --folder PATH
                                    # internal verb handler (hidden — invoked by the OS shell)
 ```
 
 `record` operates on the `project.yaml` in the CWD (walks up) or via `--file <path>` / `--project <id>`.
+
+Templates are *edited* in the TUI (`copalpm` → `[T]`). The CLI surface is intentionally limited to list/export/import for sharing and transfer across machines.
 
 ---
 
@@ -137,8 +144,71 @@ Per-user data lives at:
 Files:
 - `registry.json` — list of registered projects (path + metadata)
 - `sessions.jsonl` — append-only session log (one JSON object per line)
-- `templates.json` — user-defined project templates (seeded with defaults on first run)
+- `templates/` — one YAML file per project template (see "Templates" below)
 - `config.json` — task-tracker service config (port, API key)
+- `templates.json.migrated-YYYY-MM-DD.bak` — one-shot backup written when the
+  legacy `templates.json` is converted to per-file YAMLs. Never recreated.
+
+---
+
+## Templates
+
+Each template is a self-contained YAML file at `<DATA_DIR>/templates/<NN>-<id>.yaml`. The numeric `NN-` filename prefix is the **only** ordering mechanism (Unix `.d/` drop-in idiom — rename a file to reorder; the `id:` inside the YAML is the source of truth). Templates declare their own field list, so users can add or remove fields without code changes; the InitScreen renders the chosen template's fields dynamically.
+
+Schema (v1):
+
+```yaml
+# CopalPM template — schema v1
+schema_version: 1
+id: tactical
+name: Tactical
+folders:
+  - 01_Intake
+  - 02_Workfiles/Plates             # nested paths are allowed (forward slash)
+  - 02_Workfiles/Renders/EXR        # safety guard rejects ../, absolute, drive letters, ~
+fields:
+  - {key: type,     label: Type,     kind: select, default: tlc,
+     options: [{value: tlc, label: Internal}, {value: client, label: Client}]}
+  - {key: client,   label: Client,   kind: text, default: ""}
+  - {key: supervisor, label: VFX Supervisor, kind: text, default: ""}
+```
+
+Field kinds (v1): `text` (Input), `select` (Select with `options: [{value, label}]`), `list` (Input, comma-split on read → list[str]), `bool` (Checkbox).
+
+### Unpack table (template fields → project.yaml structure)
+
+When `build_project_record` applies a template's field values to the new project record, well-known keys nest into established sub-dicts; everything else lands at the top level:
+
+| template field `key` | project.yaml location |
+|---|---|
+| `client` | `client.name` |
+| `client_contact` | `client.contact` |
+| `director` | `people.director` |
+| `producer` | `people.producer` |
+| `collaborators` | `people.collaborators` |
+| `budget` | `financial.quoted_budget` |
+| `rate` | `financial.rate_per_hour` |
+| `est_hours` | `financial.estimated_hours` |
+| any other key | top-level (e.g. `record["supervisor"]`) |
+
+Reserved field keys (rejected by `validate_template`, silently skipped by `apply_to_record`): `id`, `slug`, `name`, `schema_version`, `created_at`, `deadline`, `phase_log`, `time_entries`, `deliverables`, `copalvx`, `tags`, `notes`, `people`, `financial`. These are produced structurally by `build_project_record` and must not be clobbered.
+
+### Migration from legacy `templates.json`
+
+One-shot, idempotent, runs lazily on first call to `templates.load_all()`:
+
+1. If `templates/` has ≥1 YAML → no-op (with a stderr warning if `templates.json` also exists, e.g. user restored a backup — ignore the legacy file).
+2. If `templates/` is empty AND `templates.json` exists → migrate. Each legacy entry becomes one `<NN>-<id>.yaml`. Legacy file is **renamed** to `templates.json.migrated-<date>.bak` (never deleted) as insurance. Fields with explicit `null` values in the legacy entry (e.g. `director: null` in the Digital Signage default) are omitted from the v1 fields list — honors "user cleared this slot".
+3. Otherwise (clean install) → seed defaults: Tactical, Digital Signage, Custom.
+
+### CLI vs TUI surface
+
+- **TUI** (`copalpm` → `[T]` → TemplateScreen) is the editing path: `[N]ew`, `[E]dit`, `[D]elete`, `[I]mport` (file picker for `.yaml`), `[X]port` (FileSave). EditTemplateModal lets users add/remove/reorder fields via `AddFieldModal`; folders are a multi-line TextArea (one path per line, with the path-safety guard fired on save).
+- **CLI** (`copalpm template …`) covers the sharing/transfer surface only: `list [--json]`, `export <id> [--out PATH]`, `import <path> [--force]`. Editing intentionally stays TUI-only.
+
+### Validation contract
+
+`project_record.cmd_validate` no longer enum-checks `type`/`category` (`VALID_TYPES` / `VALID_CATEGORIES` deleted). Templates own the legal value set — a project created from a template declaring `type: r_and_d` is valid. Structural checks remain: required identity fields, phase-log shape, deadline date format, financial-field numeric types, `schema_version == 1`.
 
 ---
 
@@ -296,9 +366,10 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-200 tests:
-- 13 import tests (every module + handler resolves; no `from project_registry` references remain)
-- 66 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the new `shell-integration` + `tui --screen` flags, `project doctor`, `whose`)
+256 tests:
+- 15 import tests (every module + handler resolves; no `from project_registry` references remain; templates / template_cli modules import cleanly)
+- 75 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the `shell-integration` + `tui --screen` flags, `project doctor`, `whose`, `template list/export/import`)
+- 42 unit tests for `templates` module — folder-path safety guard (relative / traversal / drive-letter / `~`), schema validation (kind, options, reserved keys, duplicate keys, bool default type), `apply_to_record` unpack table (well-known nesting + custom-key top-level + reserved-key skip), save/load round-trip (field-order preservation, prefix filename, edit overwrites same id, backslash → forward-slash normalize), delete by id, import (validation + collision + force overwrite), export (file vs dir target), migration (legacy → per-file + .bak rename, explicit-None field omitted, idempotency, clean-install seeds defaults, warning when legacy alongside new), load resilience (malformed YAML / invalid structure both skipped not crashed), nested folders create the right tree, `build_project_record` integration (custom fields top-level, no enum check)
 - 14 unit tests for shell_integration (verb definitions, asset resolution, Windows command-string quoting, macOS workflow XML well-formedness, notifier never raises)
 - 6 unit tests for atomic save_yaml (round-trip, header, tmp cleanup, overwrite, concurrent threads, Windows-retry mocked)
 - 7 unit tests for project_doctor helpers (`find_path_drift`, `find_orphan_sessions` — registry/sessions drift detection)
@@ -354,7 +425,9 @@ See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
 
 13. **Project name slugs transliterate non-ASCII letters via `anyascii`.** `pm._to_ascii()` (called first by both `slug_title()` and `make_slug()`) folds Greek `Κ` → `K`, Cyrillic `П` → `P`, accented Latin `é` → `e`, CJK → its standard romanization, etc. The original cut stripped *everything* outside `[A-Za-z0-9\-_]`, which silently deleted the user's Greek title `Κατάρρευση τιμών έως -40%` and left just `-40` (from `-40%`). With the date suffix that gave a folder named `-40-140526`; the post-push hook then sent `-40-140526` as the CopalVX project name, and because the receiving subprocess uses `argparse.parse_known_args`, the leading `-` was interpreted as a flag — shifting positionals so subsequent pulls reported `No remembered location for project 'v1.0'`. **Principle:** letters and meaningful symbols get *romanized* (`€` → `EUR`, `™` → `TM`); ornamental marks and emoji are *dropped*. The slug pipeline always produces a readable, ASCII-only, dash-safe string. `slug_title()`/`make_slug()` also `.strip("-_")` at the end as belt-and-braces protection against degenerate inputs (`"---Hello---"` → `"HELLO"`). `InitScreen._do_create()` additionally rejects names whose slug comes back empty (emoji-only / pure-symbol input) with a `"Project name must contain at least one letter or digit (emojis alone don't count)."` toast; `pm.cmd_init()` does the same up front for the CLI path. The InitScreen form shows a live preview of the resulting ID + CopalVX name as the user types. **`anyascii` (ISC) was picked over `unidecode` for license cleanliness** — `Unidecode` on PyPI is GPL-2.0+, which would contaminate this Apache-2.0 dist. `anyascii` renders emoji as `:shortcode:` literals (🎉 → `:tada:`); `_to_ascii` strips those with a `re.sub(r":[a-z0-9_+\-]+:", "", ...)` pass so emoji-only input still degrades to empty. If you ever swap out the transliteration library, keep both the principle and the emoji-shortcode strip: any change that reverts to "strip non-ASCII" will reintroduce the regression, and any change that surfaces shortcodes will sneak `TADA` into project IDs.
 
-14. **No sync registry/sessions I/O inside a Textual `set_interval` or `_tick_timer` callback.** `DashboardScreen._refresh_data` runs every 30 s on the render thread (`tui_app.py` `set_interval(30, self._refresh_data)`) and synchronously calls `load_registry()` + `find_orphan_sessions(registry, SESSIONS_LOG)`. `find_orphan_sessions` walks the full `sessions.jsonl`; the log is append-only and grows monotonically. Microseconds today, but on a multi-year file (millions of lines) it will block the render thread for hundreds of ms per tick and drop frames. The same calls inside modal-result callbacks (post-`push_screen` continuations after the user dismisses a modal) stay safe — user input rate-limits them — so the rule is specifically about *unattended periodic* paths. When the perf cost surfaces (or proactively, when adding any new periodic refresh), mirror gotcha #8: a daemon thread polls every N seconds and writes to `self._<thing>_cache`; the interval callback only reads the cache.
+14. **No sync registry/sessions I/O inside a Textual `set_interval` or `_tick_timer` callback.** `DashboardScreen._refresh_data` runs every 30 s on the render thread (`tui_app.py` `set_interval(30, self._refresh_data)`) and synchronously calls `load_registry()` + `find_orphan_sessions(registry, SESSIONS_LOG)`. `find_orphan_sessions` walks the full `sessions.jsonl`; the log is append-only and grows monotonically. Microseconds today, but on a multi-year file (millions of lines) it will block the render thread for hundreds of ms per tick and drop frames. The same calls inside modal-result callbacks (post-`push_screen` continuations after the user dismisses a modal) stay safe — user input rate-limits them — so the rule is specifically about *unattended periodic* paths. When the perf cost surfaces (or proactively, when adding any new periodic refresh), mirror gotcha #8: a daemon thread polls every N seconds and writes to `self._<thing>_cache`; the interval callback only reads the cache. `templates.load_all()` falls under the same rule: it's called once per InitScreen/TemplateScreen construction, never from a tick.
+
+15. **Template folder paths must be relative + traversal-safe.** Every entry in a template's `folders:` list creates a directory under the new project root via `(root / d).mkdir(parents=True, exist_ok=True)`. A malicious or hand-edited template with `../../escape` or `/etc/passwd` would create folders outside the project root. `templates._validate_template_folder_path` rejects: absolute paths (POSIX leading `/`, Windows drive letters, leading `\`), `..` segments anywhere, `~` home expansion, empty segments, and bare `.`/`..`. The guard is called at three points: (a) `validate_template` at load time (invalid templates skipped with stderr warning), (b) `save_template` before write (raises `ValueError`, surfaced as a toast in `EditTemplateModal._do_save`), and (c) `InitScreen._do_create` immediately before `mkdir` (belt-and-braces — catches hand-edited YAML that bypassed save_template). Both POSIX-style `a/b/c` and Windows-style `a\b\c` are accepted; stored as forward slashes (normalized via `_normalize_folder_path`). Do not relax these rules — the guard is the only thing preventing a shared `.yaml` from creating files anywhere on the importer's disk.
 
 ---
 

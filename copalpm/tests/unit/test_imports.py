@@ -38,11 +38,36 @@ def test_import_pm_internals():
     from copalpm.pm import (
         _YAML_HEADER, build_project_record, compute_id_and_path,
         days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
-        load_templates, save_templates, upsert_registry,
+        upsert_registry,
     )
     assert _YAML_HEADER.startswith("# project.yaml")
     assert callable(build_project_record)
     assert callable(compute_id_and_path)
+
+
+def test_import_templates_module():
+    """Public surface of the templates module (dynamic-fields per-file YAML)."""
+    from copalpm.templates import (
+        SCHEMA_VERSION, TEMPLATES_DIR, VALID_KINDS, RESERVED_FIELD_KEYS,
+        UNPACK_TABLE,
+        load_all, load_by_id, save_template, delete_template,
+        import_template, export_template, validate_template,
+        apply_to_record, template_field_defaults,
+    )
+    assert SCHEMA_VERSION == 1
+    assert "text" in VALID_KINDS
+    for fn in (load_all, load_by_id, save_template, delete_template,
+               import_template, export_template, validate_template,
+               apply_to_record, template_field_defaults):
+        assert callable(fn), fn
+
+
+def test_import_template_cli_handlers():
+    from copalpm.template_cli import (
+        cmd_template_list, cmd_template_export, cmd_template_import,
+    )
+    for fn in (cmd_template_list, cmd_template_export, cmd_template_import):
+        assert callable(fn), fn
 
 
 def test_import_record_handlers():
@@ -82,8 +107,12 @@ def test_import_tui_main():
 
 
 def test_import_config():
-    from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
+    from copalpm.config import (
+        DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE, TEMPLATES_DIR,
+    )
     assert DATA_DIR.name == "copalpm"
+    assert TEMPLATES_DIR.parent == DATA_DIR
+    assert TEMPLATES_FILE.parent == DATA_DIR
 
 
 def test_import_copalvx_api():

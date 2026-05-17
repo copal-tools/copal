@@ -23,4 +23,10 @@ REGISTRY       = DATA_DIR / "registry.json"
 SESSIONS_LOG   = DATA_DIR / "sessions.jsonl"
 SESSION_FILE   = DATA_DIR / "current_session.json"
 CONFIG_FILE    = DATA_DIR / "config.json"
+
+# Templates live as one YAML file per template under TEMPLATES_DIR/. The
+# legacy single-file path TEMPLATES_FILE is preserved here purely for the
+# one-shot migration probe in copalpm.templates._migrate_if_needed —
+# anything else should use TEMPLATES_DIR.
+TEMPLATES_DIR  = DATA_DIR / "templates"
 TEMPLATES_FILE = DATA_DIR / "templates.json"

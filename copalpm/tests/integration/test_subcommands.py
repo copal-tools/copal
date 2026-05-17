@@ -52,10 +52,17 @@ def test_help_succeeds_and_lists_groups():
 
 def test_each_group_has_help():
     """Every top-level group responds to `--help` cleanly."""
-    for group in ("project", "record", "time", "service", "deliver"):
+    for group in ("project", "record", "time", "service", "deliver", "template"):
         r = _run(group, "--help")
         assert r.returncode == 0, f"`copalpm {group} --help` failed: {r.stderr}"
         assert "usage:" in r.stdout.lower()
+
+
+def test_template_group_in_help():
+    """The new `template` group must surface in top-level --help."""
+    r = _run("--help")
+    assert r.returncode == 0, r.stderr
+    assert "template" in r.stdout
 
 
 # ── Read-only data commands ───────────────────────────────────────────────────
@@ -82,6 +89,25 @@ def test_project_status_json_is_valid_json():
 def test_project_rollup_runs():
     r = _run("project", "rollup")
     assert r.returncode == 0, r.stderr
+
+
+def test_template_list_runs():
+    """`template list` should always succeed (auto-seeds defaults on first run)."""
+    r = _run("template", "list")
+    assert r.returncode == 0, r.stderr
+
+
+def test_template_list_json_is_valid_json():
+    r = _run("template", "list", "--json")
+    assert r.returncode == 0, r.stderr
+    payload = json.loads(r.stdout)
+    assert isinstance(payload, list)
+    # Each entry has the documented shape
+    for entry in payload:
+        assert "id"      in entry
+        assert "name"    in entry
+        assert "fields"  in entry
+        assert "folders" in entry
 
 
 # ── record get round-trip (skips if registry is empty) ────────────────────────

@@ -26,17 +26,19 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button, Checkbox, DataTable, Footer, Header, Input, Label,
     ProgressBar, RadioButton, RadioSet, RichLog, Rule, Select, Static,
+    TextArea,
 )
 from textual.widget import Widget
-from textual_fspicker import SelectDirectory
+from textual_fspicker import FileOpen, FileSave, Filters, SelectDirectory
 
 from copalpm.config import DATA_DIR, SESSIONS_LOG
 from copalpm import copalvx_api
 from copalpm.pm import (
     _YAML_HEADER, build_project_record, compute_id_and_path,
     days_ago, fmt_h, load_project_yaml, load_registry, save_registry,
-    load_templates, save_templates, slug_title, upsert_registry,
+    slug_title, upsert_registry,
 )
+from copalpm import templates
 from copalpm.project_doctor import find_orphan_sessions, find_path_drift
 
 
@@ -342,6 +344,11 @@ class TimerStartModal(ModalScreen):
             event.stop()
 
 
+def _safe_template_css_id(tid: str) -> str:
+    """Map a template id to a CSS-safe ASCII identifier for class names + widget ids."""
+    return re.sub(r"[^a-z0-9_-]", "-", (tid or "").lower())
+
+
 class InitScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Cancel"),
@@ -392,8 +399,8 @@ class InitScreen(Screen):
 
     def __init__(self, initial_dir: str | None = None) -> None:
         super().__init__()
-        self._preset_index  = 0  # 0=Custom, 1..N=template index
-        self._templates     = load_templates()
+        self._templates     = templates.load_all()
+        self._preset_index  = 0
         self._initial_dir   = initial_dir
 
     def compose(self) -> ComposeResult:
@@ -404,37 +411,31 @@ class InitScreen(Screen):
                 yield Label("Name *", classes="field-label")
                 yield Input(placeholder="Project name", id="name-input")
                 yield Static(self._preview_text(""), id="name-preview")
-                yield Label("Preset", classes="field-label")
-                yield RadioSet(
-                    RadioButton("Custom"),
-                    *[RadioButton(t["name"]) for t in self._templates],
-                    id="preset-radio",
-                )
-                # Custom fields are flat direct children so the scroll container
-                # can compute their full virtual height (nested Vertical clips them).
-                yield Label("Type", classes="field-label custom-field")
-                yield Select(
-                    [("Internal", "tlc"), ("Client", "client"), ("Personal", "personal")],
-                    value="tlc", allow_blank=False, id="type-select", classes="custom-field",
-                )
-                yield Label("Category", classes="field-label custom-field")
-                yield Select(
-                    [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
-                     ("B2B", "b2b"), ("Digital", "digital")],
-                    value="tvc", allow_blank=False, id="category-select", classes="custom-field",
-                )
-                yield Label("Client", classes="field-label custom-field")
-                yield Input(placeholder="Client name (optional)", id="client-input",
-                            classes="custom-field")
-                yield Label("Director", classes="field-label custom-field")
-                yield Input(placeholder="Agency / director (optional)", id="director-input",
-                            classes="custom-field")
-                yield Label("Producer", classes="field-label custom-field")
-                yield Input(placeholder="Producer (optional)", id="producer-input",
-                            classes="custom-field")
-                yield Label("Deadline", classes="field-label custom-field")
-                yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input",
-                            classes="custom-field")
+
+                if self._templates:
+                    yield Label("Template", classes="field-label")
+                    yield RadioSet(
+                        *[RadioButton(t["name"]) for t in self._templates],
+                        id="preset-radio",
+                    )
+                    # Pre-mount every template's fields as flat children of the
+                    # ScrollableContainer (gotcha #5: never nest Vertical for
+                    # toggle-able fields — use CSS class display toggle). All
+                    # fields share class `tmpl-field`; each template owns its
+                    # own class `tmpl-<id>` so on_radio_set_changed flips one
+                    # set on and the rest off.
+                    for tmpl in self._templates:
+                        yield from self._compose_template_fields(tmpl)
+                else:
+                    yield Static(
+                        "[yellow]No templates installed. Press Esc and then "
+                        "[b]T[/b] from the dashboard to create one.[/yellow]",
+                        id="no-templates-msg",
+                    )
+
+                yield Label("Deadline", classes="field-label")
+                yield Input(placeholder="YYYY-MM-DD (optional)", id="deadline-input")
+
                 yield Label("Project folder", classes="field-label")
                 with Horizontal(id="dir-row"):
                     yield Input(id="dir-input")
@@ -445,8 +446,76 @@ class InitScreen(Screen):
                 yield Button("Create", variant="primary", id="btn-create")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
+    def _compose_template_fields(self, tmpl: dict) -> ComposeResult:
+        safe_tid = _safe_template_css_id(tmpl["id"])
+        for decl in tmpl.get("fields", []):
+            yield from self._render_template_field(decl, safe_tid)
+
+    def _render_template_field(self, decl: dict, safe_tid: str) -> ComposeResult:
+        key       = decl["key"]
+        kind      = decl.get("kind", "text")
+        label     = decl.get("label", key)
+        default   = decl.get("default")
+        widget_id = f"tmpl-{safe_tid}-{key}"
+        class_str = f"tmpl-field tmpl-{safe_tid}"
+
+        if kind == "bool":
+            yield Checkbox(label, value=bool(default), id=widget_id,
+                           classes=class_str)
+            return
+
+        yield Label(label, classes=f"field-label {class_str}")
+        if kind == "select":
+            options = [(o.get("label", ""), o.get("value", ""))
+                       for o in decl.get("options", [])]
+            valid_values = [v for _, v in options]
+            first_value = valid_values[0] if valid_values else ""
+            # Defensive: a hand-edited template may have a default that isn't
+            # in its options list. Textual's Select raises
+            # InvalidSelectValueError if `value` isn't in the options — crashes
+            # the whole screen at mount. Coerce to the first valid value and
+            # carry on. validate_template now rejects this at save time so new
+            # templates can't introduce it; this branch only fires for legacy
+            # bad data on disk.
+            if default in valid_values:
+                value = default
+            else:
+                value = first_value
+            yield Select(options, value=value, allow_blank=False,
+                         id=widget_id, classes=class_str)
+        elif kind == "list":
+            # Defensive stringification: hand-edited templates may have
+            # non-string defaults inside a list (legacy structured data).
+            if isinstance(default, list):
+                text = ", ".join(str(x) for x in default)
+            else:
+                text = ""
+            yield Input(value=text, placeholder="comma-separated",
+                        id=widget_id, classes=class_str)
+        else:  # text
+            yield Input(value=str(default) if default is not None else "",
+                        placeholder="(optional)",
+                        id=widget_id, classes=class_str)
+
+    def _read_template_field_value(self, decl: dict, safe_tid: str):
+        key       = decl["key"]
+        kind      = decl.get("kind", "text")
+        widget_id = f"tmpl-{safe_tid}-{key}"
+        if kind == "bool":
+            return self.query_one(f"#{widget_id}", Checkbox).value
+        if kind == "select":
+            return self.query_one(f"#{widget_id}", Select).value
+        if kind == "list":
+            raw = self.query_one(f"#{widget_id}", Input).value
+            return [s.strip() for s in raw.split(",") if s.strip()]
+        # text
+        raw = self.query_one(f"#{widget_id}", Input).value.strip()
+        return raw or None
+
     def on_mount(self) -> None:
         self.query_one("#dir-input", Input).value = self._initial_dir or self._default_dir()
+        # Show only the first template's fields by default.
+        self._apply_template_visibility(self._preset_index)
         self.query_one("#name-input", Input).focus()
 
     @staticmethod
@@ -461,9 +530,18 @@ class InitScreen(Screen):
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self._preset_index = event.index
-        show = (event.index == 0)
-        for w in self.query(".custom-field"):
-            w.display = show
+        self._apply_template_visibility(event.index)
+
+    def _apply_template_visibility(self, idx: int) -> None:
+        if not self._templates:
+            return
+        if not (0 <= idx < len(self._templates)):
+            return
+        chosen = self._templates[idx]
+        safe_tid = _safe_template_css_id(chosen["id"])
+        target_class = f"tmpl-{safe_tid}"
+        for w in self.query(".tmpl-field"):
+            w.display = w.has_class(target_class)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "name-input":
@@ -528,27 +606,37 @@ class InitScreen(Screen):
             return
 
         base_dir = Path(self.query_one("#dir-input", Input).value.strip() or self._default_dir())
+        deadline = self.query_one("#deadline-input", Input).value.strip() or None
+
+        if not self._templates:
+            self.notify("No templates installed — create one first.", severity="error")
+            return
 
         idx = self._preset_index
-        if idx == 0:  # Custom
-            proj_type     = self.query_one("#type-select",     Select).value
-            category      = self.query_one("#category-select", Select).value
-            client        = self.query_one("#client-input",    Input).value.strip() or None
-            director      = self.query_one("#director-input",  Input).value.strip() or None
-            producer      = self.query_one("#producer-input",  Input).value.strip() or None
-            deadline      = self.query_one("#deadline-input",  Input).value.strip() or None
-            collaborators = None
-            folders       = ["01_Intake", "02_Workfiles", "03_Exports"]
-        else:
-            tmpl          = self._templates[idx - 1]
-            proj_type     = tmpl.get("type", "tlc")
-            category      = tmpl.get("category", "tvc")
-            client        = tmpl.get("client")
-            director      = tmpl.get("director")
-            producer      = tmpl.get("producer")
-            collaborators = tmpl.get("collaborators", [])
-            deadline      = None
-            folders       = tmpl.get("folders", ["01_Intake", "02_Workfiles", "03_Exports"])
+        if not (0 <= idx < len(self._templates)):
+            idx = 0
+        tmpl = self._templates[idx]
+        safe_tid = _safe_template_css_id(tmpl["id"])
+        folders = list(tmpl.get("folders", ["01_Intake", "02_Workfiles", "03_Exports"]))
+
+        # Re-validate folder paths against the safe-path rules in case the
+        # template YAML was hand-edited after we loaded it.
+        for f in folders:
+            err = templates._validate_template_folder_path(f)
+            if err:
+                self.notify(f"Template folder invalid: {err}", severity="error")
+                return
+
+        field_values: dict = {}
+        for decl in tmpl.get("fields", []):
+            try:
+                field_values[decl["key"]] = self._read_template_field_value(
+                    decl, safe_tid,
+                )
+            except Exception:
+                # Fall back to the declared default if the widget went missing
+                # (shouldn't happen in practice — defensive only).
+                field_values[decl["key"]] = decl.get("default")
 
         try:
             use_inc = self.query_one("#inc-check", Checkbox).value
@@ -560,10 +648,9 @@ class InitScreen(Screen):
                 (root / d).mkdir(parents=True, exist_ok=True)
 
             record    = build_project_record(
-                pid, name, proj_type, category,
-                client, None, director, producer,
-                deadline, None, None, None,
-                collaborators=collaborators,
+                pid, name,
+                field_values=field_values,
+                deadline=deadline,
             )
             yaml_path = root / "project.yaml"
             yaml_path.write_text(
@@ -1888,14 +1975,211 @@ class CopalVXDeleteModal(ModalScreen):
             event.stop()
 
 
+class AddFieldModal(ModalScreen):
+    """Add or edit a single field declaration inside a template."""
+
+    DEFAULT_CSS = """
+    AddFieldModal { align: center middle; }
+    #fld-edit-box {
+        width: 60;
+        height: 80vh;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #fld-edit-box .field-label { color: $text-muted; margin-top: 1; }
+    #fld-edit-scroll { height: 1fr; }
+    #fld-edit-buttons { margin-top: 1; height: auto; }
+    #fld-edit-buttons Button { margin-right: 1; }
+    #fld-options { height: 8; }
+    """
+
+    KINDS = [
+        ("Text",          "text"),
+        ("Select",        "select"),
+        ("List (comma)",  "list"),
+        ("Boolean",       "bool"),
+    ]
+
+    def __init__(self, field: dict | None = None) -> None:
+        super().__init__()
+        self._field   = field or {}
+        self._is_new  = field is None
+        # Track whether the user manually edited Key — if they have, stop
+        # auto-syncing from Label.
+        self._key_locked = bool(self._field.get("key"))
+
+    def compose(self) -> ComposeResult:
+        title = "[bold]New Field[/bold]" if self._is_new else "[bold]Edit Field[/bold]"
+        with Vertical(id="fld-edit-box"):
+            yield Label(title)
+            yield Rule()
+            with ScrollableContainer(id="fld-edit-scroll"):
+                yield Label("Label *", classes="field-label")
+                yield Input(
+                    value=self._field.get("label", ""),
+                    placeholder="Display label, e.g. 'VFX Supervisor'",
+                    id="fld-label",
+                )
+                yield Label("Key *  (auto-filled from label; edit to override)",
+                            classes="field-label")
+                yield Input(
+                    value=self._field.get("key", ""),
+                    placeholder="lowercase_with_underscores",
+                    id="fld-key",
+                )
+                yield Label("Kind", classes="field-label")
+                yield Select(
+                    self.KINDS,
+                    value=self._field.get("kind", "text"),
+                    allow_blank=False,
+                    id="fld-kind",
+                )
+                yield Label("Default", classes="field-label")
+                yield Input(
+                    value=self._default_str(self._field),
+                    placeholder="(empty for blank)",
+                    id="fld-default",
+                )
+                yield Label(
+                    "Options (only for Select; one per line as value=label)",
+                    classes="field-label",
+                )
+                yield TextArea(
+                    self._options_text(self._field.get("options", [])),
+                    id="fld-options",
+                )
+            with Horizontal(id="fld-edit-buttons"):
+                yield Button("Save", variant="primary", id="btn-fld-save")
+                yield Button("Cancel", variant="default", id="btn-fld-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#fld-label", Input).focus()
+
+    @staticmethod
+    def _default_str(fd: dict) -> str:
+        d = fd.get("default")
+        if d is None:
+            return ""
+        if isinstance(d, bool):
+            return "true" if d else "false"
+        if isinstance(d, list):
+            return ", ".join(str(x) for x in d)
+        return str(d)
+
+    @staticmethod
+    def _options_text(options: list) -> str:
+        lines = []
+        for o in options:
+            if isinstance(o, dict):
+                lines.append(f"{o.get('value', '')}={o.get('label', '')}")
+        return "\n".join(lines)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # Auto-fill Key from Label until the user touches Key manually.
+        if event.input.id == "fld-key":
+            self._key_locked = bool(event.value.strip())
+            return
+        if event.input.id != "fld-label" or self._key_locked:
+            return
+        from copalpm.pm import make_slug
+        slug = make_slug(event.value).replace("-", "_")
+        # Set without triggering our own handler again — Input.value setter
+        # fires Input.Changed; guard via the same _key_locked flag.
+        self._key_locked = False
+        self.query_one("#fld-key", Input).value = slug
+        self._key_locked = False
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-fld-cancel":
+            self.dismiss(None)
+            return
+        if bid != "btn-fld-save":
+            return
+
+        label = self.query_one("#fld-label", Input).value.strip()
+        key   = self.query_one("#fld-key", Input).value.strip()
+        kind  = self.query_one("#fld-kind", Select).value
+        default_raw = self.query_one("#fld-default", Input).value.strip()
+        options_raw = self.query_one("#fld-options", TextArea).text
+
+        if not label:
+            self.notify("Label is required.", severity="error")
+            self.query_one("#fld-label", Input).focus()
+            return
+        if not key:
+            self.notify("Key is required.", severity="error")
+            self.query_one("#fld-key", Input).focus()
+            return
+        if not re.match(r"^[a-z][a-z0-9_]*$", key):
+            self.notify(
+                f"Key must match [a-z][a-z0-9_]* (got {key!r}).",
+                severity="error",
+            )
+            self.query_one("#fld-key", Input).focus()
+            return
+        if key in templates.RESERVED_FIELD_KEYS:
+            self.notify(f"Key {key!r} is reserved; pick another.", severity="error")
+            self.query_one("#fld-key", Input).focus()
+            return
+
+        decl: dict = {"key": key, "label": label, "kind": kind}
+        if kind == "select":
+            opts: list[dict] = []
+            for line in options_raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if "=" in line:
+                    v, _, l = line.partition("=")
+                    opts.append({"value": v.strip(), "label": l.strip()})
+                else:
+                    opts.append({"value": line, "label": line})
+            if not opts:
+                self.notify(
+                    "Select fields need at least one option.",
+                    severity="error",
+                )
+                self.query_one("#fld-options", TextArea).focus()
+                return
+            values = [o["value"] for o in opts]
+            if default_raw and default_raw not in values:
+                self.notify(
+                    f"Default {default_raw!r} must match one of the option values: "
+                    f"{', '.join(values)}.",
+                    severity="error",
+                )
+                self.query_one("#fld-default", Input).focus()
+                return
+            decl["options"] = opts
+            decl["default"] = default_raw or opts[0]["value"]
+        elif kind == "bool":
+            decl["default"] = default_raw.lower() in ("true", "1", "yes", "on")
+        elif kind == "list":
+            decl["default"] = (
+                [s.strip() for s in default_raw.split(",") if s.strip()]
+                if default_raw else []
+            )
+        else:  # text
+            decl["default"] = default_raw
+
+        self.dismiss(decl)
+
+
 class EditTemplateModal(ModalScreen):
-    """Create or edit a project template."""
+    """Create or edit a project template (v1 dynamic-fields shape)."""
 
     DEFAULT_CSS = """
     EditTemplateModal { align: center middle; }
     #tmpl-edit-box {
-        width: 64;
-        height: 85vh;
+        width: 76;
+        height: 90vh;
         padding: 1 2;
         background: $surface;
         border: solid $accent;
@@ -1904,12 +2188,25 @@ class EditTemplateModal(ModalScreen):
     #tmpl-edit-scroll { height: 1fr; }
     #tmpl-edit-buttons { margin-top: 1; height: auto; }
     #tmpl-edit-buttons Button { margin-right: 1; }
+    #tmpl-folders { height: 6; }
+    #tmpl-fields-list { height: auto; margin-top: 1; }
+    .tmpl-field-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+    .tmpl-field-row Button { min-width: 4; margin-right: 0; }
+    .tmpl-field-summary { width: 1fr; padding: 0 1; }
     """
 
     def __init__(self, template: dict | None = None) -> None:
         super().__init__()
-        self._template = template or {}
-        self._is_new   = template is None
+        self._is_new  = template is None
+        self._orig_id = (template or {}).get("id")  # preserved across an edit
+        self._name    = (template or {}).get("name", "")
+        self._folders = list((template or {}).get(
+            "folders", ["01_Intake", "02_Workfiles", "03_Exports"]
+        ))
+        self._fields: list[dict] = [dict(f) for f in (template or {}).get("fields", [])]
 
     def compose(self) -> ComposeResult:
         title = "[bold]New Template[/bold]" if self._is_new else "[bold]Edit Template[/bold]"
@@ -1918,34 +2215,49 @@ class EditTemplateModal(ModalScreen):
             yield Rule()
             with ScrollableContainer(id="tmpl-edit-scroll"):
                 yield Label("Name *", classes="field-label")
-                yield Input(value=self._template.get("name", ""), placeholder="Template name", id="tmpl-name")
-                yield Label("Type", classes="field-label")
-                yield Select(
-                    [("Internal", "tlc"), ("Client", "client"), ("Personal", "personal")],
-                    value=self._template.get("type", "tlc"), allow_blank=False, id="tmpl-type",
+                yield Input(value=self._name,
+                            placeholder="Template name", id="tmpl-name")
+                yield Label(
+                    "Folders (one path per line; use `dir/sub/leaf` for nesting)",
+                    classes="field-label",
                 )
-                yield Label("Category", classes="field-label")
-                yield Select(
-                    [("TVC", "tvc"), ("Digital Signage", "digital-signage"),
-                     ("B2B", "b2b"), ("Digital", "digital")],
-                    value=self._template.get("category", "tvc"), allow_blank=False, id="tmpl-category",
-                )
-                yield Label("Client", classes="field-label")
-                yield Input(value=self._template.get("client") or "", placeholder="Client name", id="tmpl-client")
-                yield Label("Director", classes="field-label")
-                yield Input(value=self._template.get("director") or "", placeholder="Agency / director (optional)", id="tmpl-director")
-                yield Label("Producer", classes="field-label")
-                yield Input(value=self._template.get("producer") or "", placeholder="Producer (optional)", id="tmpl-producer")
-                yield Label("Folders (comma-separated)", classes="field-label")
-                default_folders = "01_Intake, 02_Workfiles, 03_Exports"
-                folders_val = ", ".join(self._template.get("folders", [])) or default_folders
-                yield Input(value=folders_val, placeholder=default_folders, id="tmpl-folders")
+                yield TextArea("\n".join(self._folders), id="tmpl-folders")
+                yield Label("Fields", classes="field-label")
+                yield Static(self._fields_summary(), id="tmpl-fields-count")
+                yield Vertical(id="tmpl-fields-list")
+                yield Button("+ Add field", id="btn-add-field")
             with Horizontal(id="tmpl-edit-buttons"):
-                yield Button("Save", variant="primary", id="btn-tmpl-save")
+                yield Button("Save",   variant="primary", id="btn-tmpl-save")
                 yield Button("Cancel", variant="default", id="btn-tmpl-cancel")
 
     def on_mount(self) -> None:
+        self._render_fields()
         self.query_one("#tmpl-name", Input).focus()
+
+    def _fields_summary(self) -> str:
+        n = len(self._fields)
+        return f"[dim]{n} field{'s' if n != 1 else ''}[/dim]"
+
+    def _render_fields(self) -> None:
+        container = self.query_one("#tmpl-fields-list", Vertical)
+        container.remove_children()
+        for i, fd in enumerate(self._fields):
+            container.mount(self._make_field_row(i, fd))
+        self.query_one("#tmpl-fields-count", Static).update(self._fields_summary())
+
+    def _make_field_row(self, idx: int, fd: dict) -> Horizontal:
+        summary = (
+            f"[bold]{fd.get('label', '')}[/bold]  "
+            f"[dim]({fd.get('key', '')} · {fd.get('kind', '')})[/dim]"
+        )
+        return Horizontal(
+            Static(summary, classes="tmpl-field-summary"),
+            Button("↑", id=f"fld-up-{idx}",   tooltip="Move up"),
+            Button("↓", id=f"fld-down-{idx}", tooltip="Move down"),
+            Button("Edit", id=f"fld-edit-{idx}"),
+            Button("×", id=f"fld-del-{idx}",  tooltip="Delete"),
+            classes="tmpl-field-row",
+        )
 
     def on_key(self, event) -> None:
         if event.key == "escape":
@@ -1953,38 +2265,137 @@ class EditTemplateModal(ModalScreen):
             event.stop()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-tmpl-cancel":
+        bid = event.button.id or ""
+        if bid == "btn-tmpl-cancel":
             self.dismiss(None)
-        elif event.button.id == "btn-tmpl-save":
-            name = self.query_one("#tmpl-name", Input).value.strip()
-            if not name:
-                self.notify("Name is required.", severity="error")
+            return
+        if bid == "btn-tmpl-save":
+            self._do_save()
+            return
+        if bid == "btn-add-field":
+            self._add_field()
+            return
+        if bid.startswith("fld-up-"):
+            self._move_field(int(bid.removeprefix("fld-up-")), -1)
+            return
+        if bid.startswith("fld-down-"):
+            self._move_field(int(bid.removeprefix("fld-down-")), +1)
+            return
+        if bid.startswith("fld-edit-"):
+            self._edit_field(int(bid.removeprefix("fld-edit-")))
+            return
+        if bid.startswith("fld-del-"):
+            self._delete_field(int(bid.removeprefix("fld-del-")))
+            return
+
+    def _move_field(self, idx: int, delta: int) -> None:
+        new = idx + delta
+        if 0 <= new < len(self._fields):
+            self._fields[idx], self._fields[new] = self._fields[new], self._fields[idx]
+            self._render_fields()
+
+    def _delete_field(self, idx: int) -> None:
+        if 0 <= idx < len(self._fields):
+            del self._fields[idx]
+            self._render_fields()
+
+    def _add_field(self) -> None:
+        def on_result(fd: dict | None) -> None:
+            if fd is None:
+                return
+            if any(existing.get("key") == fd["key"] for existing in self._fields):
+                self.notify(
+                    f"Field key {fd['key']!r} already exists in this template.",
+                    severity="error",
+                )
+                return
+            self._fields.append(fd)
+            self._render_fields()
+        self.app.push_screen(AddFieldModal(), on_result)
+
+    def _edit_field(self, idx: int) -> None:
+        if not (0 <= idx < len(self._fields)):
+            return
+        current = dict(self._fields[idx])
+        def on_result(fd: dict | None) -> None:
+            if fd is None:
+                return
+            if any(j != idx and existing.get("key") == fd["key"]
+                   for j, existing in enumerate(self._fields)):
+                self.notify(
+                    f"Field key {fd['key']!r} already exists in this template.",
+                    severity="error",
+                )
+                return
+            self._fields[idx] = fd
+            self._render_fields()
+        self.app.push_screen(AddFieldModal(current), on_result)
+
+    def _do_save(self) -> None:
+        from copalpm.pm import make_slug
+        name = self.query_one("#tmpl-name", Input).value.strip()
+        if not name:
+            self.notify("Name is required.", severity="error")
+            self.query_one("#tmpl-name", Input).focus()
+            return
+
+        folders_raw = self.query_one("#tmpl-folders", TextArea).text
+        folders = [line.strip() for line in folders_raw.splitlines() if line.strip()]
+        if not folders:
+            self.notify("At least one folder is required.", severity="error")
+            self.query_one("#tmpl-folders", TextArea).focus()
+            return
+        for f in folders:
+            err = templates._validate_template_folder_path(f)
+            if err:
+                self.notify(f"Folder: {err}", severity="error")
+                self.query_one("#tmpl-folders", TextArea).focus()
+                return
+
+        tid = self._orig_id
+        if not tid:
+            tid = make_slug(name)
+            if not tid:
+                self.notify(
+                    "Could not derive id from name. Use at least one letter or digit.",
+                    severity="error",
+                )
                 self.query_one("#tmpl-name", Input).focus()
                 return
-            raw     = self.query_one("#tmpl-folders", Input).value
-            folders = [f.strip() for f in raw.split(",") if f.strip()]
-            if not folders:
-                folders = ["01_Intake", "02_Workfiles", "03_Exports"]
-            self.dismiss({
-                "name":          name,
-                "type":          self.query_one("#tmpl-type",     Select).value,
-                "category":      self.query_one("#tmpl-category", Select).value,
-                "client":        self.query_one("#tmpl-client",   Input).value.strip() or None,
-                "director":      self.query_one("#tmpl-director", Input).value.strip() or None,
-                "producer":      self.query_one("#tmpl-producer", Input).value.strip() or None,
-                "collaborators": self._template.get("collaborators", []),
-                "folders":       folders,
-            })
+            if templates.load_by_id(tid) is not None:
+                self.notify(
+                    f"A template with id '{tid}' already exists. "
+                    f"Choose a different name or delete the existing template first.",
+                    severity="error",
+                )
+                self.query_one("#tmpl-name", Input).focus()
+                return
+
+        tmpl = {
+            "schema_version": templates.SCHEMA_VERSION,
+            "id":      tid,
+            "name":    name,
+            "folders": folders,
+            "fields":  self._fields,
+        }
+        try:
+            templates.save_template(tmpl, allow_id_collision=True)
+        except ValueError as e:
+            self.notify(str(e), severity="error")
+            return
+        self.dismiss(tmpl)
 
 
 class TemplateScreen(Screen):
     """Manage project templates."""
 
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Back"),
-        Binding("n",      "new_template",    "New"),
-        Binding("e",      "edit_template",   "Edit"),
-        Binding("d",      "delete_template", "Delete"),
+        Binding("escape", "app.pop_screen",    "Back"),
+        Binding("n",      "new_template",      "New"),
+        Binding("e",      "edit_template",     "Edit"),
+        Binding("d",      "delete_template",   "Delete"),
+        Binding("i",      "import_template",   "Import"),
+        Binding("x",      "export_template",   "Export"),
     ]
 
     def __init__(self) -> None:
@@ -1999,68 +2410,119 @@ class TemplateScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.cursor_type = "row"
-        table.add_columns("Name", "Type", "Category", "Client", "Folders")
+        table.add_columns("Name", "ID", "Fields", "Folders", "File")
         self._refresh()
 
     def _refresh(self) -> None:
-        self._templates = load_templates()
-        table           = self.query_one(DataTable)
+        self._templates = templates.load_all()
+        table = self.query_one(DataTable)
         table.clear()
         for i, t in enumerate(self._templates):
-            folders_str = ", ".join(t.get("folders", []))
             table.add_row(
                 t.get("name", "—"),
-                t.get("type", "—"),
-                t.get("category", "—"),
-                t.get("client") or "—",
-                folders_str,
+                t.get("id", "—"),
+                str(len(t.get("fields", []))),
+                str(len(t.get("folders", []))),
+                t.get("_filename", "—"),
                 key=str(i),
             )
 
     def _selected_index(self) -> int | None:
+        # Templates are added to the DataTable in self._templates order, so
+        # the row cursor index maps directly to the templates list.
+        # (Note: Textual 8.x has no `cursor_row_key` attribute — use
+        # `cursor_row` and bounds-check against the current template list.)
         table = self.query_one(DataTable)
-        key   = table.cursor_row_key
-        if key is None:
+        row = table.cursor_row
+        if row is None or row < 0 or row >= len(self._templates):
             return None
-        try:
-            return int(key.value)
-        except Exception:
-            return None
+        return row
 
     def action_new_template(self) -> None:
         def on_result(t: dict | None) -> None:
             if t is None:
                 return
-            self._templates.append(t)
-            save_templates(self._templates)
             self._refresh()
-
         self.app.push_screen(EditTemplateModal(), on_result)
 
     def action_edit_template(self) -> None:
         idx = self._selected_index()
         if idx is None or idx >= len(self._templates):
             return
-        template = self._templates[idx].copy()
-
+        template = self._templates[idx]
         def on_result(t: dict | None) -> None:
             if t is None:
                 return
-            self._templates[idx] = t
-            save_templates(self._templates)
             self._refresh()
-
         self.app.push_screen(EditTemplateModal(template), on_result)
 
     def action_delete_template(self) -> None:
         idx = self._selected_index()
         if idx is None or idx >= len(self._templates):
             return
+        tid  = self._templates[idx].get("id")
         name = self._templates[idx].get("name", "?")
-        del self._templates[idx]
-        save_templates(self._templates)
-        self._refresh()
-        self.notify(f"Template '{name}' deleted.")
+        if not tid:
+            return
+        if templates.delete_template(tid):
+            self._refresh()
+            self.notify(f"Template '{name}' deleted.")
+        else:
+            self.notify(f"Could not delete '{name}'.", severity="error")
+
+    def action_import_template(self) -> None:
+        def on_pick(path: Path | None) -> None:
+            if path is None:
+                return
+            try:
+                tmpl = templates.import_template(Path(path))
+            except (FileNotFoundError, ValueError) as e:
+                self.notify(str(e), severity="error", title="Import failed")
+                return
+            self._refresh()
+            self.notify(f"Imported '{tmpl['id']}'.")
+
+        yaml_filter = Filters(
+            ("YAML files", lambda p: p.suffix.lower() in (".yaml", ".yml")),
+            ("All files",  lambda p: True),
+        )
+        self.app.push_screen(
+            FileOpen(str(Path.home()), title="Import template", filters=yaml_filter),
+            on_pick,
+        )
+
+    def action_export_template(self) -> None:
+        idx = self._selected_index()
+        if idx is None or idx >= len(self._templates):
+            return
+        tid  = self._templates[idx].get("id")
+        name = self._templates[idx].get("name", "?")
+        if not tid:
+            return
+
+        def on_pick(path: Path | None) -> None:
+            if path is None:
+                return
+            try:
+                written = templates.export_template(tid, Path(path))
+            except ValueError as e:
+                self.notify(str(e), severity="error", title="Export failed")
+                return
+            self.notify(f"Exported '{name}' to {written}")
+
+        yaml_filter = Filters(
+            ("YAML files", lambda p: p.suffix.lower() in (".yaml", ".yml")),
+            ("All files",  lambda p: True),
+        )
+        self.app.push_screen(
+            FileSave(
+                str(Path.home()),
+                title=f"Export '{name}'",
+                filters=yaml_filter,
+                default_file=f"{tid}.yaml",
+            ),
+            on_pick,
+        )
 
 
 class ProjectDetailScreen(Screen):

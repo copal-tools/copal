@@ -55,21 +55,21 @@ def test_project_init_minimal():
     assert args.group == "project"
     assert args.cmd == "init"
     assert args.name == "MyProject"
-    assert args.tactical is False
-    assert args.ds is False
     assert args.inc is False
 
 
 def test_project_init_with_flags():
-    args = _parse(["project", "init", "MyProj", "--dir", "/tmp", "--inc", "--tactical"])
+    args = _parse(["project", "init", "MyProj", "--dir", "/tmp", "--inc"])
     assert args.dir == "/tmp"
     assert args.inc is True
-    assert args.tactical is True
 
 
-def test_project_init_tactical_and_ds_mutually_exclusive():
+def test_project_init_tactical_flag_removed():
+    """`--tactical` and `--ds` were removed alongside the dynamic-templates redesign."""
     with pytest.raises(SystemExit):
-        _parse(["project", "init", "X", "--tactical", "--ds"])
+        _parse(["project", "init", "X", "--tactical"])
+    with pytest.raises(SystemExit):
+        _parse(["project", "init", "X", "--ds"])
 
 
 def test_project_init_requires_name():
@@ -429,6 +429,57 @@ def test_whose_with_json_flag():
     args = _parse(["whose", "--json", "/tmp/foo.txt"])
     assert args.path == "/tmp/foo.txt"
     assert args.json is True
+
+
+# ── `template` group ──────────────────────────────────────────────────────────
+
+def test_template_requires_subcommand():
+    with pytest.raises(SystemExit):
+        _parse(["template"])
+
+
+def test_template_list_plain():
+    args = _parse(["template", "list"])
+    assert args.group == "template" and args.cmd == "list"
+    assert args.json is False
+
+
+def test_template_list_json():
+    args = _parse(["template", "list", "--json"])
+    assert args.json is True
+
+
+def test_template_export_requires_id():
+    with pytest.raises(SystemExit):
+        _parse(["template", "export"])
+
+
+def test_template_export_with_id_and_out():
+    args = _parse(["template", "export", "tactical", "--out", "C:/tmp/t.yaml"])
+    assert args.id == "tactical"
+    assert args.out == "C:/tmp/t.yaml"
+
+
+def test_template_export_id_only():
+    args = _parse(["template", "export", "tactical"])
+    assert args.id == "tactical"
+    assert args.out is None
+
+
+def test_template_import_requires_path():
+    with pytest.raises(SystemExit):
+        _parse(["template", "import"])
+
+
+def test_template_import_minimal():
+    args = _parse(["template", "import", "C:/some/tmpl.yaml"])
+    assert args.path == "C:/some/tmpl.yaml"
+    assert args.force is False
+
+
+def test_template_import_with_force():
+    args = _parse(["template", "import", "tmpl.yaml", "--force"])
+    assert args.force is True
 
 
 # ── Help-text invariants ──────────────────────────────────────────────────────
