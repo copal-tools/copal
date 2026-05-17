@@ -397,7 +397,14 @@ def _install_macos() -> int:
         check=False, capture_output=True,
     )
     installed_count = len(VERBS) - len(skipped)
-    print(f"Installed {installed_count} Copal Quick Action(s). They appear in Finder under Services.")
+    print(f"Installed {installed_count} Copal Quick Action(s).")
+    print()
+    print("Find them in Finder by right-clicking a project folder (or a file inside one)")
+    print("→ Services or Quick Actions submenu.")
+    print()
+    print("If you don't see them, enable each verb in:")
+    print("  System Settings → Keyboard → Keyboard Shortcuts… → Services → Files and Folders")
+    print("Newly installed Services arrive unticked; Finder hides them until enabled.")
     if skipped:
         print(f"Skipped (template missing): {', '.join(skipped)}", file=sys.stderr)
     return 0
