@@ -24,6 +24,7 @@ FG = (235, 235, 235)     # off-white
 ACCENT_START = (94, 200, 134)   # green
 ACCENT_STOP = (220, 96, 96)     # red
 ACCENT_NEW = (110, 168, 254)    # blue
+ACCENT_DELIVER = (190, 142, 230) # purple for "mark as deliverable"
 ACCENT_BRAND = (220, 180, 80)   # amber for the umbrella mark
 
 
@@ -78,7 +79,8 @@ def main() -> None:
     _write_ico(ASSETS / "copal-start.ico", "▶", ACCENT_START)  # ▶
     _write_ico(ASSETS / "copal-stop.ico", "■", ACCENT_STOP)    # ■
     _write_ico(ASSETS / "copal-new.ico", "+", ACCENT_NEW)
-    print(f"Wrote 4 ICO files to {ASSETS}")
+    _write_ico(ASSETS / "copal-deliver.ico", "↑", ACCENT_DELIVER)
+    print(f"Wrote 5 ICO files to {ASSETS}")
 
 
 if __name__ == "__main__":

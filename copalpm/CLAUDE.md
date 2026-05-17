@@ -90,15 +90,17 @@ copalpm shell-integration install   # add Copal verbs to Explorer / Finder right
 copalpm shell-integration uninstall # remove the OS shell verbs
 copalpm shell-integration status    # show installed/missing state
 
-copalpm deliver <path> [...]       # log a delivered asset
+copalpm deliver <path> [<path>...] [...]    # log delivered asset(s) — bundle of files
+                                            # → one entry with `paths: list[str]`
 
 copalpm template list [--json]              # installed templates
 copalpm template export <id> [--out PATH]   # write a template's YAML to a file
 copalpm template import <path> [--force]    # validate + install a template YAML
 
 copalpm task-tracker               # daemon entry point (hidden — invoked by the OS service)
-copalpm shell-trigger {start|stop|new-project} --folder PATH
+copalpm shell-trigger {start|stop|new-project|mark-deliverable} {--folder|--file} PATH
                                    # internal verb handler (hidden — invoked by the OS shell)
+                                   # `mark-deliverable` uses --file; the others use --folder
 ```
 
 `record` operates on the `project.yaml` in the CWD (walks up) or via `--file <path>` / `--project <id>`.
@@ -278,45 +280,61 @@ just-removed daemon.
 
 ---
 
-## Shell integration (Phase 6 F4)
+## Shell integration (Phase 6 F4 + deliverables verb)
 
-`copalpm shell-integration install` adds three right-click verbs to the OS file
-manager: "Copal: Start Timer", "Copal: Stop Timer", "Copal: New Project Here".
-All three dispatch to the hidden `copalpm shell-trigger <verb> --folder PATH`
-subcommand — that indirection keeps the OS-level command strings stable as the
-underlying implementation evolves. Source: `shell_integration.py`.
+`copalpm shell-integration install` adds four right-click verbs to the OS file
+manager: "Copal: Start Timer", "Copal: Stop Timer", "Copal: New Project Here"
+(folder-targeted), and "Copal: Mark as Deliverable" (file-targeted). All four
+dispatch to the hidden `copalpm shell-trigger <verb> {--folder|--file} PATH`
+subcommand — that indirection keeps the OS-level command strings stable as
+the underlying implementation evolves. Source: `shell_integration.py`.
+
+Each VERB entry carries a `target` field — `"folder"` for the first three,
+`"file"` for `mark-deliverable`. The installer reads `target` to decide which
+HKLM parent (or macOS Info.plist template) to use.
 
 Footprint:
-- **Windows:** HKLM keys under `Software\Classes\Directory\shell\Copal*` (folder
-  selected) and `Software\Classes\Directory\Background\shell\Copal*` (empty
-  space inside a folder). Two contexts × three verbs = 6 parent keys. Each key
-  carries a menu title, an `Icon` value pointing at `src/copalpm/assets/copal-*.ico`,
-  and a `command` subkey. **Install/uninstall need admin elevation** — see
-  gotcha #10 for why HKCU isn't viable on Win11 24H2+. Status is read-only
-  and works for any user.
+- **Windows:** HKLM keys under:
+  - Folder verbs: `Software\Classes\Directory\shell\Copal*` (folder selected)
+    plus `Software\Classes\Directory\Background\shell\Copal*` (empty space).
+  - File verbs: `Software\Classes\*\shell\Copal*` (the `*` class matches all
+    file types; verb appears in the legacy menu on any file).
+
+  Three folder verbs × two contexts + one file verb × one context = 7 parent
+  keys. Each key carries a menu title, an `Icon` value pointing at
+  `src/copalpm/assets/copal-*.ico`, and a `command` subkey. **Install/uninstall
+  need admin elevation** — see gotcha #10 for why HKCU isn't viable on Win11
+  24H2+. Status is read-only and works for any user.
 - **macOS:** `.workflow` bundles in `~/Library/Services/`. The XML for both
   `Info.plist` and `document.wflow` is generated from templates shipped at
-  `src/copalpm/assets/macos_workflow/{Info.plist.template,document.wflow.template}`
-  by substituting `__MENU_TITLE__` and `__COPALPM_COMMAND__` placeholders.
-  The templates were captured from a real Automator-generated Quick Action —
+  `src/copalpm/assets/macos_workflow/`. Folder verbs use `Info.plist.template`
+  + `document.wflow.template`; file verbs use the `.file.template` siblings.
+  All templates were captured from real Automator-generated Quick Actions —
   do **not** edit by hand. `AMWorkflowServiceRunner` aborts at runtime if the
   `workflowMetaData` structure isn't a recognized `AMServiceMetaData` shape
-  (the Service appears in the Finder menu but clicking it silently does
-  nothing — see gotcha #12). Install/uninstall runs `pbs -flush` so Finder
-  picks up changes immediately.
+  (gotcha #12). Install/uninstall runs `pbs -flush` so Finder picks up
+  changes immediately. If the `.file.template` files are missing, macOS
+  install skips the file verb with a one-line stderr warning and continues
+  with the folder verbs — see `assets/macos_workflow/NOTES.md` for how to
+  capture the templates on a Mac.
 
 The "New Project Here" verb spawns `copalpm tui --screen init --dir <folder>`
 detached from the parent process; the TUI's `PMApp` accepts `initial_screen`
 and `initial_dir` to deep-link straight to `InitScreen` with the folder
 pre-filled. See `tui_app.py:PMApp.__init__` and `InitScreen.__init__`.
 
-Future file-targeted verbs (e.g. "Start Timer for project containing this
-file") should resolve the project via `find_project_for_path` in
-`project_lookup.py`, or via `copalpm whose --json <path>` if the verb handler
-is a subprocess. See the "Path → project lookup (`whose`)" section above.
+The "Mark as Deliverable" verb resolves the file's owning project via
+`find_project_for_path` (gotcha-safe: drift-recovery walk-up included), then
+appends a new deliverable entry to that project's `project.yaml`. Multi-select
+on Explorer fires the verb once per file; the **batch marker**
+(`<DATA_DIR>/.deliverable-batch.json`, 5 s TTL) groups successive invocations
+into one deliverable instead of N. Cross-project guard: the marker's
+`project_id` must match the next invocation's resolved project, else a new
+entry is created in the new project. See `_cmd_mark_deliverable` and
+`_read_batch_marker` / `_write_batch_marker` in `shell_integration.py`.
 
 Icons are placeholder ICOs generated by `scripts/generate_icons.py` (one-shot,
-Pillow). The script writes `copal{,-start,-stop,-new}.ico` to
+Pillow). The script writes `copal{,-start,-stop,-new,-deliver}.ico` to
 `src/copalpm/assets/`; the wheel ships those files via
 `[tool.hatch.build.targets.wheel.force-include]`. Maintainers regenerate them
 when branding lands or glyphs change.
@@ -366,7 +384,7 @@ uv run --directory copalpm pytest                 # run all tests (~19s)
 uv run --directory copalpm pytest tests/unit/     # unit only (~1s)
 ```
 
-256 tests:
+309 tests:
 - 15 import tests (every module + handler resolves; no `from project_registry` references remain; templates / template_cli modules import cleanly)
 - 75 argparse tests (every documented subcommand invocation, required args, mutually-exclusive groups, hidden `task-tracker` and `shell-trigger`, the `shell-integration` + `tui --screen` flags, `project doctor`, `whose`, `template list/export/import`)
 - 42 unit tests for `templates` module — folder-path safety guard (relative / traversal / drive-letter / `~`), schema validation (kind, options, reserved keys, duplicate keys, bool default type), `apply_to_record` unpack table (well-known nesting + custom-key top-level + reserved-key skip), save/load round-trip (field-order preservation, prefix filename, edit overwrites same id, backslash → forward-slash normalize), delete by id, import (validation + collision + force overwrite), export (file vs dir target), migration (legacy → per-file + .bak rename, explicit-None field omitted, idempotency, clean-install seeds defaults, warning when legacy alongside new), load resilience (malformed YAML / invalid structure both skipped not crashed), nested folders create the right tree, `build_project_record` integration (custom fields top-level, no enum check)
@@ -428,6 +446,8 @@ See umbrella [../WORKFLOW.md](../WORKFLOW.md) for the full development protocol.
 14. **No sync registry/sessions I/O inside a Textual `set_interval` or `_tick_timer` callback.** `DashboardScreen._refresh_data` runs every 30 s on the render thread (`tui_app.py` `set_interval(30, self._refresh_data)`) and synchronously calls `load_registry()` + `find_orphan_sessions(registry, SESSIONS_LOG)`. `find_orphan_sessions` walks the full `sessions.jsonl`; the log is append-only and grows monotonically. Microseconds today, but on a multi-year file (millions of lines) it will block the render thread for hundreds of ms per tick and drop frames. The same calls inside modal-result callbacks (post-`push_screen` continuations after the user dismisses a modal) stay safe — user input rate-limits them — so the rule is specifically about *unattended periodic* paths. When the perf cost surfaces (or proactively, when adding any new periodic refresh), mirror gotcha #8: a daemon thread polls every N seconds and writes to `self._<thing>_cache`; the interval callback only reads the cache. `templates.load_all()` falls under the same rule: it's called once per InitScreen/TemplateScreen construction, never from a tick.
 
 15. **Template folder paths must be relative + traversal-safe.** Every entry in a template's `folders:` list creates a directory under the new project root via `(root / d).mkdir(parents=True, exist_ok=True)`. A malicious or hand-edited template with `../../escape` or `/etc/passwd` would create folders outside the project root. `templates._validate_template_folder_path` rejects: absolute paths (POSIX leading `/`, Windows drive letters, leading `\`), `..` segments anywhere, `~` home expansion, empty segments, and bare `.`/`..`. The guard is called at three points: (a) `validate_template` at load time (invalid templates skipped with stderr warning), (b) `save_template` before write (raises `ValueError`, surfaced as a toast in `EditTemplateModal._do_save`), and (c) `InitScreen._do_create` immediately before `mkdir` (belt-and-braces — catches hand-edited YAML that bypassed save_template). Both POSIX-style `a/b/c` and Windows-style `a\b\c` are accepted; stored as forward slashes (normalized via `_normalize_folder_path`). Do not relax these rules — the guard is the only thing preventing a shared `.yaml` from creating files anywhere on the importer's disk.
+
+16. **Deliverable schema migrated from `path: str` to `paths: list[str]` (2026-05-17).** Each deliverable now bundles a list of files instead of a single one; the right-click "Mark as Deliverable" verb groups files selected in one Explorer multi-select into a single entry via a 5 s batch marker. Legacy entries written before this date have `path: str` and no `paths` key — they're **soft-migrated on every read** by `deliver_cli.normalize_deliverables(record)`. Rules: `paths` wins on collision, empty / whitespace path strings are filtered, malformed entries (no `paths` and no `path`) are kept with `paths: []` so the TUI can surface them. The `format` field is no longer written; display code derives `Path(paths[0]).suffix` on the fly. Read sites must call `normalize_deliverables(record)` before consuming `entry["paths"]` — the four call sites in tree (`cmd_show`, `cmd_status`, `_dashboard_rows`, `_detail_data`) already do this. Bespoke consumers (e.g. third-party scripts cat'ing `project.yaml`) need to either run the normalize themselves or tolerate both shapes. New writes — both from `copalpm deliver` and from the TUI's AddDeliverableModal — always emit `paths` and store paths relative to the project root when the file is under it (absolute otherwise), so deliverables survive `project move` and stay portable across machines.
 
 ---
 

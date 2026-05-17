@@ -347,15 +347,19 @@ def cmd_show(args):
             print(f"  Last push: {cvx['last_push_version']}  ({last_push_date})")
 
     # Deliverables
+    from copalpm.deliver_cli import normalize_deliverables
+    normalize_deliverables(record)
     delivs = record.get("deliverables") or []
     print(f"\n── Deliverables {'─' * 37}\n")
     if delivs:
-        last = delivs[-1]
-        d_type  = last.get("type", "?")
-        d_recip = last.get("recipient", "")
-        d_when  = str(last.get("delivered_at", ""))[:10]
-        recip_str = f" -> {d_recip}" if d_recip else ""
-        print(f"  {last.get('name', '?')}  [{d_type}{recip_str}]  {d_when}")
+        for d in delivs:
+            d_type  = d.get("type", "?")
+            d_recip = d.get("recipient", "")
+            d_when  = str(d.get("delivered_at", ""))[:10]
+            n_files = len(d.get("paths") or [])
+            files_str = "1 file" if n_files == 1 else f"{n_files} files"
+            recip_str = f" -> {d_recip}" if d_recip else ""
+            print(f"  {d.get('name', '?')}  [{d_type}{recip_str}]  ({files_str}, {d_when})")
     else:
         print(f"  No deliverables logged.")
 

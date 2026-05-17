@@ -2,7 +2,7 @@
 
 > Read this first for orientation across the monorepo.
 > Per-package detail lives in [copalvx/CLAUDE.md](./copalvx/CLAUDE.md), [copalpm/CLAUDE.md](./copalpm/CLAUDE.md), and [copalblender/CLAUDE.md](./copalblender/CLAUDE.md).
-> Last updated: 2026-05-17 (CopalPM templates rebuilt as dynamic-fields per-file YAMLs; shareable via `copalpm template export/import`).
+> Last updated: 2026-05-17 (deliverables: multi-file schema + right-click verb + TUI add-deliverable modal; CopalPM templates rebuilt as dynamic-fields per-file YAMLs).
 
 ---
 
@@ -153,6 +153,36 @@ project lookup, direct HTTP to `127.0.0.1:5123` for `/start`/`/stop`/`/ping`/
 Blender version's `scripts/addons/copal_blender/`. 93 unit + 4 integration
 tests. See [copalblender/CLAUDE.md](./copalblender/CLAUDE.md) for
 architecture and gotchas.
+
+**Deliverables overhaul (2026-05-17).** CopalPM deliverables evolved from
+a single-file-per-entry log into multi-file delivery packages, plus a new
+right-click verb and a TUI add affordance. Three coordinated changes:
+- **Schema:** each deliverable entry's `path: str` is now `paths: list[str]`.
+  Legacy YAMLs auto-migrate on read via `deliver_cli.normalize_deliverables`
+  — see copalpm gotcha #16. The `format` field is dropped on save; displays
+  derive it from `Path(paths[0]).suffix` on the fly. Stored paths are
+  relative to the project root when the file is under it, absolute
+  otherwise (survives `project move`).
+- **Right-click verb:** new `Copal: Mark as Deliverable` verb installs
+  alongside the existing three. File-targeted on Windows
+  (`HKLM\Software\Classes\*\shell\CopalMarkDeliverable`, visible in the
+  legacy menu via Shift+right-click) and via a file-targeted Automator
+  Quick Action on macOS. The verb resolves the file's owning project via
+  `find_project_for_path` (gotcha-safe with drift recovery) and either
+  creates a new deliverable entry or appends to a fresh one. Windows
+  multi-select fires the verb per file; a 5-second batch marker at
+  `<DATA_DIR>/.deliverable-batch.json` groups consecutive invocations
+  into one deliverable (cross-project guard included).
+- **TUI:** ProjectDetailScreen's read-only deliverables block becomes a
+  list of all deliverables with file counts (e.g. `📦 Final cut  3 files`)
+  plus a `+ Add deliverable` button. The new `AddDeliverableModal` lets
+  users pick files iteratively via `textual-fspicker.FileOpen` (the lib
+  doesn't support multi-select; an "+ Add file" button re-opens the picker).
+  Out of scope this round: edit / delete of existing deliverables.
+
+CLI: `copalpm deliver <path> [<path>...]` (nargs="+") so the CLI can also
+bundle multiple files into one entry. Test suite 258 → 309. See
+[copalpm/CLAUDE.md](./copalpm/CLAUDE.md) "Shell integration" + gotcha #16.
 
 Tracked follow-ups in [MERGE_PLAN.md](./MERGE_PLAN.md):
 - Archive old standalone repos

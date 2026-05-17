@@ -37,9 +37,15 @@ def _key_exists(path: str) -> bool:
 
 
 def _all_verb_keys() -> list[str]:
+    """Every (verb, parent) pair that the installer is expected to register.
+
+    Folder verbs land under the two `Directory` parents; file verbs land
+    under `*\\shell` (the all-files class). Returns the union as fully-
+    qualified relative paths.
+    """
     paths = []
-    for parent in si._WIN_PARENTS:
-        for verb in si.VERBS:
+    for verb in si.VERBS:
+        for parent in si._win_parents_for(verb["target"]):
             paths.append(f"{parent}\\{verb['id']}")
     return paths
 

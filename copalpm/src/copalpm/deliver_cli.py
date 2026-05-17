@@ -1,26 +1,25 @@
 # src/copalpm/deliver_cli.py
-# `copalpm deliver` — log a delivered asset into project.yaml's deliverables.
+# `copalpm deliver` — log delivered assets into project.yaml's deliverables.
+#
+# Each deliverable entry is a delivery *package* — a list of file paths plus
+# metadata (type, recipient, name, notes). Storing multiple files per entry
+# matches how VFX/motion deliveries actually ship (hero render + proxy + spec
+# sheet bundled together).
 #
 # Usage (from inside a project folder):
-#   copalpm deliver "Final_v3.mp4"                          # draft -> client
-#   copalpm deliver "Final_v3.mp4" --final                  # final -> client
-#   copalpm deliver "Final_v3.mp4" --final --to broadcast   # final -> broadcast
-#   copalpm deliver "Draft1.mp4" --to internal              # draft -> internal
-#   copalpm deliver "file.mp4" --name "Custom Name" --note "colour-corrected"
+#   copalpm deliver "Final_v3.mp4"
+#   copalpm deliver "Final_v3.mp4" "Final_v3_proxy.mp4" "spec.pdf"
+#   copalpm deliver "Final_v3.mp4" --final --to broadcast
+#   copalpm deliver "files...*" --name "Episode 7 final delivery"
 #
-# The argparse setup lives in cli.py; cmd_deliver() below is the handler.
+# Legacy entries with `path: str` (pre-2026-05-17) are soft-migrated on read
+# via normalize_deliverable. New writes always use `paths: list[str]`.
 
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
-
-_YAML_HEADER = (
-    "# project.yaml — Project Record v1\n"
-    "# Reference: schema/project-record.yaml\n\n"
-)
+from .project_record import save_yaml, load_yaml
 
 VALID_RECIPIENTS = {"internal", "client", "broadcast"}
 
@@ -40,35 +39,84 @@ def _find_project_yaml() -> Path:
     sys.exit(1)
 
 
-def cmd_deliver(args):
-    """Log a delivered asset into the project record's deliverables array.
+def _relativize(p: Path, root: Path) -> str:
+    """Return p relative to root when under root, absolute string otherwise.
 
-    Called by `copalpm deliver` via the unified cli.py dispatcher. Expects an
-    argparse Namespace with: path, final, to, name, note, file.
+    Used by both the CLI and the shell-trigger verb so deliverables survive
+    `project move` and stay portable across machines.
+    """
+    try:
+        return str(p.resolve().relative_to(root.resolve()))
+    except (ValueError, OSError):
+        return str(p)
+
+
+# ── Normalization (legacy → new schema) ──────────────────────────────────────
+
+def normalize_deliverable(entry: dict) -> dict:
+    """Coerce a deliverable entry into the v2 schema (`paths: list[str]`).
+
+    Rules:
+      - `paths` present → wins; `path` is dropped on collision.
+      - `paths` absent, `path` present → `paths = [path]`.
+      - Empty / whitespace path strings are filtered out.
+      - Malformed entries (no `paths` and no `path`, or `paths == []` after
+        filtering) are kept with `paths: []` so the TUI can surface them
+        rather than silently dropping user history.
+    """
+    e = dict(entry)
+    if "paths" in e:
+        e.pop("path", None)
+    elif "path" in e:
+        e["paths"] = [e.pop("path")]
+    raw = e.get("paths") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    e["paths"] = [str(p) for p in raw if p and str(p).strip()]
+    return e
+
+
+def normalize_deliverables(record: dict) -> dict:
+    """Normalize every entry in `record['deliverables']` in place."""
+    record["deliverables"] = [
+        normalize_deliverable(d) for d in (record.get("deliverables") or [])
+    ]
+    return record
+
+
+# ── Command handler ──────────────────────────────────────────────────────────
+
+def cmd_deliver(args):
+    """Log a delivered asset (or bundle of assets) into the project record.
+
+    `args.path` is a list of one or more file paths (argparse nargs="+").
+    All paths land in a single `deliverables` entry's `paths` list.
     """
     if args.to not in VALID_RECIPIENTS:
         print(f"error: invalid recipient '{args.to}'. Choose: internal, client, broadcast",
               file=sys.stderr)
         sys.exit(1)
 
-    # Resolve project.yaml
+    paths_arg = args.path if isinstance(args.path, list) else [args.path]
+    if not paths_arg:
+        print("error: at least one path is required.", file=sys.stderr)
+        sys.exit(1)
+
     yaml_path = Path(args.file) if args.file else _find_project_yaml()
     if not yaml_path.exists():
         print(f"error: file not found: {yaml_path}", file=sys.stderr)
         sys.exit(1)
 
-    with yaml_path.open("r", encoding="utf-8") as f:
-        record = yaml.safe_load(f) or {}
+    record = load_yaml(yaml_path)
+    normalize_deliverables(record)
 
-    # Derive metadata from the file path
-    file_path = Path(args.path)
-    name      = args.name or file_path.stem
-    fmt       = file_path.suffix.lstrip(".").lower() or None
+    project_root = yaml_path.parent
+    stored_paths = [_relativize(Path(p), project_root) for p in paths_arg]
+    name = args.name or Path(paths_arg[0]).stem
 
     entry = {
         "name":         name,
-        "path":         str(file_path.resolve()) if file_path.exists() else str(file_path),
-        "format":       fmt,
+        "paths":        stored_paths,
         "type":         "final" if args.final else "draft",
         "recipient":    args.to,
         "delivered_at": _iso_now(),
@@ -76,15 +124,11 @@ def cmd_deliver(args):
     }
 
     record.setdefault("deliverables", []).append(entry)
+    save_yaml(yaml_path, record)
 
-    yaml_path.write_text(
-        _YAML_HEADER + yaml.dump(
-            record, default_flow_style=False, allow_unicode=True, sort_keys=False
-        ),
-        encoding="utf-8",
-    )
-
-    kind = "final" if args.final else "draft"
+    kind  = entry["type"]
+    n     = len(stored_paths)
+    files_str = "1 file" if n == 1 else f"{n} files"
     total = len(record["deliverables"])
-    print(f"logged: {name}  [{kind} -> {args.to}]  ({_iso_now()[:10]})")
+    print(f"logged: {name}  [{kind} -> {args.to}]  ({files_str}, {_iso_now()[:10]})")
     print(f"Total deliverables: {total}")

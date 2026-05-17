@@ -207,15 +207,16 @@ def _build_parser() -> argparse.ArgumentParser:
     s_shell.add_parser("status", help="Show which Copal verbs are currently installed")
 
     # deliver ────────────────────────────────────────────────────────────────
-    p_del = groups.add_parser("deliver", help="Log a delivered asset into project.yaml")
-    p_del.add_argument("path",
-                       help="Path to the delivered file (used to derive name and format)")
+    p_del = groups.add_parser("deliver", help="Log a delivered asset bundle into project.yaml")
+    p_del.add_argument("path", nargs="+",
+                       help="One or more paths to delivered file(s). "
+                            "Multiple paths land in a single deliverable entry.")
     p_del.add_argument("--final", action="store_true",
                        help="Mark as final (default: draft)")
     p_del.add_argument("--to", metavar="RECIPIENT", default="client",
                        help="Recipient: internal | client | broadcast  (default: client)")
     p_del.add_argument("--name", metavar="NAME",
-                       help="Display name (default: filename without extension)")
+                       help="Display name (default: first filename without extension)")
     p_del.add_argument("--note", metavar="TEXT", help="Optional notes")
     p_del.add_argument("--file", metavar="PATH",
                        help="Explicit path to project.yaml (defaults to CWD walk)")
@@ -258,9 +259,14 @@ def _build_parser() -> argparse.ArgumentParser:
     groups.add_parser("task-tracker", help=argparse.SUPPRESS)
 
     # shell-trigger (hidden — invoked by the OS shell verbs) ────────────────
+    # --folder is used by the folder-targeted verbs (start, stop, new-project),
+    # --file by file-targeted verbs (mark-deliverable). Exactly one is required.
     p_strg = groups.add_parser("shell-trigger", help=argparse.SUPPRESS)
-    p_strg.add_argument("trigger", choices=["start", "stop", "new-project"])
-    p_strg.add_argument("--folder", required=True, metavar="PATH")
+    p_strg.add_argument("trigger",
+                        choices=["start", "stop", "new-project", "mark-deliverable"])
+    strg_target = p_strg.add_mutually_exclusive_group(required=True)
+    strg_target.add_argument("--folder", metavar="PATH")
+    strg_target.add_argument("--file",   metavar="PATH")
 
     groups._choices_actions = [
         a for a in groups._choices_actions
