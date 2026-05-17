@@ -332,6 +332,7 @@ def test_shell_trigger_start_parseable():
     assert args.group == "shell-trigger"
     assert args.trigger == "start"
     assert args.folder == "C:/projects/Foo"
+    assert args.file is None
 
 
 def test_shell_trigger_stop_parseable():
@@ -344,14 +345,27 @@ def test_shell_trigger_new_project_parseable():
     assert args.trigger == "new-project"
 
 
+def test_shell_trigger_mark_deliverable_parseable():
+    args = _parse(["shell-trigger", "mark-deliverable", "--file", "C:/projects/Foo/Final.mp4"])
+    assert args.trigger == "mark-deliverable"
+    assert args.file == "C:/projects/Foo/Final.mp4"
+    assert args.folder is None
+
+
 def test_shell_trigger_rejects_unknown_trigger():
     with pytest.raises(SystemExit):
         _parse(["shell-trigger", "bogus", "--folder", "/tmp"])
 
 
-def test_shell_trigger_requires_folder():
+def test_shell_trigger_requires_target():
+    """At least one of --file / --folder must be supplied."""
     with pytest.raises(SystemExit):
         _parse(["shell-trigger", "start"])
+
+
+def test_shell_trigger_file_folder_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        _parse(["shell-trigger", "start", "--folder", "/x", "--file", "/y"])
 
 
 def test_shell_trigger_hidden_from_help(capsys):
@@ -392,10 +406,17 @@ def test_deliver_requires_path():
 
 
 def test_deliver_minimal():
+    """Single positional path → list-of-one (nargs='+')."""
     args = _parse(["deliver", "Final.mp4"])
-    assert args.path == "Final.mp4"
+    assert args.path == ["Final.mp4"]
     assert args.final is False
     assert args.to == "client"
+
+
+def test_deliver_multi_path():
+    """Multiple positional paths → one deliverable bundling N files."""
+    args = _parse(["deliver", "Final.mp4", "Final_proxy.mp4", "spec.pdf"])
+    assert args.path == ["Final.mp4", "Final_proxy.mp4", "spec.pdf"]
 
 
 def test_deliver_full():
@@ -405,10 +426,22 @@ def test_deliver_full():
         "--name", "Custom",
         "--note", "color-corrected",
     ])
+    assert args.path == ["Final.mp4"]
     assert args.final is True
     assert args.to == "broadcast"
     assert args.name == "Custom"
     assert args.note == "color-corrected"
+
+
+def test_deliver_multi_path_with_flags():
+    args = _parse([
+        "deliver", "a.mp4", "b.mp4",
+        "--final", "--to", "client",
+        "--name", "Episode 7 delivery",
+    ])
+    assert args.path == ["a.mp4", "b.mp4"]
+    assert args.final is True
+    assert args.name == "Episode 7 delivery"
 
 
 # ── `whose` group ─────────────────────────────────────────────────────────────

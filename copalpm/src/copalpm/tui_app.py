@@ -39,6 +39,8 @@ from copalpm.pm import (
     slug_title, upsert_registry,
 )
 from copalpm import templates
+from copalpm.deliver_cli import normalize_deliverables, _relativize
+from copalpm.project_record import save_yaml, load_yaml
 from copalpm.project_doctor import find_orphan_sessions, find_path_drift
 
 
@@ -227,6 +229,7 @@ def _dashboard_rows() -> list[dict]:
         path      = Path(entry.get("path", ""))
         yaml_path = path / "project.yaml"
         record    = load_project_yaml(yaml_path) if yaml_path.exists() else {}
+        normalize_deliverables(record)
 
         phase_log = record.get("phase_log") or []
         phase     = phase_log[-1].get("phase", "?") if phase_log else "missing"
@@ -259,6 +262,7 @@ def _dashboard_rows() -> list[dict]:
 
 def _detail_data(project: dict) -> dict:
     record    = load_project_yaml(Path(project["path"]) / "project.yaml")
+    normalize_deliverables(record)
     phase_log = record.get("phase_log") or []
     phase     = phase_log[-1].get("phase", "?") if phase_log else "?"
 
@@ -2525,6 +2529,177 @@ class TemplateScreen(Screen):
         )
 
 
+class AddDeliverableModal(ModalScreen):
+    """Pick one or more files and bundle them into a new deliverable entry.
+
+    Mirrors the EditTemplateModal pattern: a fixed-height Vertical box with
+    a scrollable form area and a button bar below. The files list is built
+    dynamically via a "+ Add file" button that re-opens `FileOpen` because
+    `textual-fspicker` doesn't support multi-select.
+    """
+
+    DEFAULT_CSS = """
+    AddDeliverableModal { align: center middle; }
+    #deliv-edit-box {
+        width: 76;
+        height: 85vh;
+        padding: 1 2;
+        background: $surface;
+        border: solid $accent;
+    }
+    #deliv-edit-box .field-label { color: $text-muted; margin-top: 1; }
+    #deliv-edit-scroll { height: 1fr; }
+    #deliv-edit-buttons { margin-top: 1; height: auto; }
+    #deliv-edit-buttons Button { margin-right: 1; }
+    #deliv-notes { height: 4; }
+    #deliv-files-list { height: auto; margin-top: 1; }
+    .deliv-file-row { height: auto; margin-bottom: 0; }
+    .deliv-file-row Button { min-width: 4; margin-right: 0; }
+    .deliv-file-path { width: 1fr; padding: 0 1; }
+    """
+
+    def __init__(self, project_root: Path) -> None:
+        super().__init__()
+        self._project_root = project_root
+        self._paths: list[Path] = []
+        self._user_edited_name: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="deliv-edit-box"):
+            yield Label("[bold]Add Deliverable[/bold]")
+            yield Rule()
+            with ScrollableContainer(id="deliv-edit-scroll"):
+                yield Label("Name", classes="field-label")
+                yield Input(placeholder="Defaults to first filename", id="deliv-name")
+                yield Label("Type", classes="field-label")
+                yield Select(
+                    [("Draft", "draft"), ("Final", "final")],
+                    value="draft", id="deliv-type", allow_blank=False,
+                )
+                yield Label("Recipient", classes="field-label")
+                yield Select(
+                    [("Internal",  "internal"),
+                     ("Client",    "client"),
+                     ("Broadcast", "broadcast")],
+                    value="internal", id="deliv-recipient", allow_blank=False,
+                )
+                yield Label("Notes", classes="field-label")
+                yield TextArea("", id="deliv-notes")
+                yield Label("Files", classes="field-label")
+                yield Static(self._files_summary(), id="deliv-files-count")
+                yield Vertical(id="deliv-files-list")
+                yield Button("+ Add file", id="btn-add-deliv-file")
+            with Horizontal(id="deliv-edit-buttons"):
+                yield Button("Save",   variant="primary", id="btn-deliv-save")
+                yield Button("Cancel", variant="default", id="btn-deliv-cancel")
+
+    def on_mount(self) -> None:
+        self._render_files()
+        self.query_one("#deliv-name", Input).focus()
+
+    def _files_summary(self) -> str:
+        n = len(self._paths)
+        return f"[dim]{n} file{'s' if n != 1 else ''}[/dim]"
+
+    def _render_files(self) -> None:
+        container = self.query_one("#deliv-files-list", Vertical)
+        container.remove_children()
+        for i, p in enumerate(self._paths):
+            container.mount(self._make_file_row(i, p))
+        self.query_one("#deliv-files-count", Static).update(self._files_summary())
+
+    def _make_file_row(self, idx: int, p: Path) -> Horizontal:
+        try:
+            display = str(p.relative_to(self._project_root))
+        except ValueError:
+            display = str(p)
+        return Horizontal(
+            Static(display, classes="deliv-file-path"),
+            Button("×", id=f"deliv-rm-{idx}", tooltip="Remove"),
+            classes="deliv-file-row",
+        )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "deliv-name":
+            # Mark as edited only when non-empty so clearing re-enables auto-fill
+            self._user_edited_name = bool(event.value)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "btn-deliv-cancel":
+            self.dismiss(None)
+            return
+        if bid == "btn-deliv-save":
+            self._do_save()
+            return
+        if bid == "btn-add-deliv-file":
+            self._open_file_picker()
+            return
+        if bid.startswith("deliv-rm-"):
+            idx = int(bid.removeprefix("deliv-rm-"))
+            if 0 <= idx < len(self._paths):
+                del self._paths[idx]
+                self._render_files()
+            return
+
+    def _open_file_picker(self) -> None:
+        def on_pick(path: Path | None) -> None:
+            if path is None:
+                return
+            if not path.exists() or not path.is_file():
+                self.notify(f"Not a file: {path.name}", severity="error")
+                return
+            if path in self._paths:
+                self.notify("Already added.", severity="warning")
+                return
+            self._paths.append(path)
+            self._render_files()
+            name_in = self.query_one("#deliv-name", Input)
+            if not self._user_edited_name and not name_in.value:
+                name_in.value = self._paths[0].stem
+
+        start = self._project_root if self._project_root.exists() else Path.home()
+        self.app.push_screen(
+            FileOpen(str(start), title="Pick file for deliverable"),
+            on_pick,
+        )
+
+    def _do_save(self) -> None:
+        if not self._paths:
+            self.notify("Add at least one file.", severity="error")
+            return
+        for p in self._paths:
+            if not p.exists():
+                self.notify(f"File no longer exists: {p.name}", severity="error")
+                return
+
+        name = self.query_one("#deliv-name", Input).value.strip()
+        if not name:
+            name = self._paths[0].stem
+
+        type_val      = self.query_one("#deliv-type", Select).value or "draft"
+        recipient_val = self.query_one("#deliv-recipient", Select).value or "internal"
+        notes         = self.query_one("#deliv-notes", TextArea).text.strip()
+
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        stored_paths = [_relativize(p, self._project_root) for p in self._paths]
+
+        entry = {
+            "name":         name,
+            "paths":        stored_paths,
+            "type":         type_val,
+            "recipient":    recipient_val,
+            "delivered_at": now_iso,
+            "notes":        notes,
+        }
+        self.dismiss(entry)
+
+
 class ProjectDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen",  "Back"),
@@ -2661,13 +2836,19 @@ class ProjectDetailScreen(Screen):
         body.mount(Rule())
         if d["deliverables"]:
             for deliv in d["deliverables"]:
-                rel  = days_ago(deliv.get("delivered_at", ""))
+                rel       = days_ago(deliv.get("delivered_at", ""))
+                d_type    = deliv.get("type", "?")
+                icon      = "📦" if d_type == "final" else "✏️"
+                n_files   = len(deliv.get("paths") or [])
+                files_str = "1 file" if n_files == 1 else f"{n_files} files"
                 body.mount(Static(
-                    f"  {deliv.get('name','?')}  "
-                    f"[dim]{deliv.get('type','?')} -> {deliv.get('recipient','?')}  {rel}[/dim]"
+                    f"  {icon} {deliv.get('name','?')}  "
+                    f"[dim]{d_type} -> {deliv.get('recipient','?')}  "
+                    f"{files_str}  {rel}[/dim]"
                 ))
         else:
             body.mount(Static("  [dim]No deliverables yet.[/dim]"))
+        body.mount(Button("+ Add deliverable", id="add-deliv"))
 
         # ── CopalVX ───────────────────────────────────────────────────────────
         cvx = d["copalvx"]
@@ -2786,6 +2967,41 @@ class ProjectDetailScreen(Screen):
             return cvx_name
         path = self._project.get("path", "")
         return Path(path).name if path else self._data.get("name", "unknown")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if (event.button.id or "") == "add-deliv":
+            self._open_add_deliverable()
+            event.stop()
+
+    def _open_add_deliverable(self) -> None:
+        project_root = Path(self._project.get("path", ""))
+        if not project_root.exists():
+            self.notify("Project folder not found on disk.", severity="error")
+            return
+
+        def on_saved(entry: dict | None) -> None:
+            if entry is None:
+                return
+            yaml_path = project_root / "project.yaml"
+            if not yaml_path.exists():
+                self.notify("project.yaml is missing.", severity="error")
+                return
+            record = load_yaml(yaml_path)
+            normalize_deliverables(record)
+            record.setdefault("deliverables", []).append(entry)
+            try:
+                save_yaml(yaml_path, record)
+            except OSError as e:
+                self.notify(f"Save failed: {e}", severity="error")
+                return
+            n = len(entry.get("paths") or [])
+            self.notify(
+                f"{entry.get('name','?')} — {n} file{'s' if n != 1 else ''}",
+                title="Deliverable added",
+            )
+            self._refresh_data()
+
+        self.app.push_screen(AddDeliverableModal(project_root), on_saved)
 
     def _cvx_stream_subprocess(self, proc, progress_modal: "CopalVXProgressModal") -> None:
         _cvx_stream(proc, progress_modal, self.app, self._refresh_data)

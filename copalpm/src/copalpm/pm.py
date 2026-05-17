@@ -429,7 +429,9 @@ def cmd_status(as_json: bool = False):
         last_delivery = None
 
         if yaml_path.exists():
+            from copalpm.deliver_cli import normalize_deliverables
             record = load_project_yaml(yaml_path)
+            normalize_deliverables(record)
             phase_log = record.get("phase_log") or []
             phase     = phase_log[-1].get("phase", "?") if phase_log else "?"
             total_sec = sum(int(te.get("duration_sec", 0))

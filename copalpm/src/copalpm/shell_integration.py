@@ -1,25 +1,39 @@
 # shell_integration.py — Explorer / Finder right-click integration.
 #
-# Three verbs ("Copal: Start Timer", "Copal: Stop Timer", "Copal: New Project
-# Here") install per-user, no-admin:
+# Four verbs are installed:
+#   "Copal: Start Timer"        (target: folder)
+#   "Copal: Stop Timer"         (target: folder)
+#   "Copal: New Project Here"   (target: folder)
+#   "Copal: Mark as Deliverable" (target: file — multi-select bundles via batch marker)
 #
-#   Windows: HKCU\Software\Classes\Directory\shell\Copal*           (on a folder)
-#            HKCU\Software\Classes\Directory\Background\shell\Copal* (empty space)
-#   macOS:   ~/Library/Services/Copal *.workflow bundles (Automator Quick Actions).
+# Windows registration (HKLM, requires admin):
+#   folder verbs → HKLM\Software\Classes\Directory\shell\Copal*
+#                  HKLM\Software\Classes\Directory\Background\shell\Copal*  (empty space)
+#   file verbs   → HKLM\Software\Classes\*\shell\Copal*    (all files; legacy menu only)
 #
-# Each verb dispatches to `copalpm shell-trigger {start,stop,new-project}
-# --folder PATH`. That hidden subcommand is the real implementation, so the
-# registry / .workflow command strings stay stable.
+# macOS registration:
+#   ~/Library/Services/<verb>.workflow bundles. Folder verbs use
+#   Info.plist.template + document.wflow.template; file verbs use the .file
+#   variants captured from an Automator-saved file-targeted Quick Action
+#   (gotcha #12 — never hand-roll the plist).
+#
+# Each verb dispatches to `copalpm shell-trigger <verb> --folder PATH` or
+# `--file PATH`. The hidden subcommand is the real implementation, so the
+# registry / .workflow command strings stay stable as the underlying logic
+# evolves.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal
@@ -35,18 +49,28 @@ VERBS = [
         "title":   "Copal: Start Timer",
         "trigger": "start",
         "icon":    "copal-start.ico",
+        "target":  "folder",
     },
     {
         "id":      "CopalStopTimer",
         "title":   "Copal: Stop Timer",
         "trigger": "stop",
         "icon":    "copal-stop.ico",
+        "target":  "folder",
     },
     {
         "id":      "CopalNewProject",
         "title":   "Copal: New Project Here",
         "trigger": "new-project",
         "icon":    "copal-new.ico",
+        "target":  "folder",
+    },
+    {
+        "id":      "CopalMarkDeliverable",
+        "title":   "Copal: Mark as Deliverable",
+        "trigger": "mark-deliverable",
+        "icon":    "copal-deliver.ico",
+        "target":  "file",
     },
 ]
 
@@ -105,17 +129,41 @@ def _notify_macos(title: str, message: str) -> None:
 
 # ── Windows: install / uninstall / status ─────────────────────────────────────
 
-# Verbs live under HKLM, not HKCU. Win11 24H2/25H2 (build 26200+) silently
-# filters per-user shell verbs added after the OS upgrade — confirmed by
-# building an HKLM test verb that DID appear in the menu while an identical
-# HKCU verb did not. Anchorpoint and other working HKCU verbs were
-# grandfathered in by being present at upgrade time. New installs need HKLM.
-# Cost: install/uninstall now require admin elevation (UAC prompt). Status
-# is read-only and works as any user.
-_WIN_PARENTS = (
+# Folder verbs live under HKLM (not HKCU). Win11 24H2/25H2 (build 26200+) silently
+# filters per-user shell verbs added after the OS upgrade — see gotcha #10.
+# File verbs use `*\shell` (the asterisk class = all file types) so the verb
+# appears under any file in the legacy context menu (Shift+right-click).
+_WIN_FOLDER_PARENTS = (
     r"Software\Classes\Directory\shell",
     r"Software\Classes\Directory\Background\shell",
 )
+_WIN_FILE_PARENTS = (
+    r"Software\Classes\*\shell",
+)
+# Kept for backwards-compat with older imports / tests that pre-date the
+# target-aware refactor. Same value as the folder parents.
+_WIN_PARENTS = _WIN_FOLDER_PARENTS
+
+
+def _win_parents_for(target: str) -> tuple[str, ...]:
+    """Return the HKLM key prefixes a verb should be registered under.
+
+    Folder verbs install under both the directory and its background; file
+    verbs install under the all-files (`*`) class.
+    """
+    if target == "file":
+        return _WIN_FILE_PARENTS
+    return _WIN_FOLDER_PARENTS
+
+
+def _all_win_parents() -> tuple[str, ...]:
+    """Every HKLM parent path the verbs could be registered under (no dups)."""
+    seen: list[str] = []
+    for verb in VERBS:
+        for parent in _win_parents_for(verb["target"]):
+            if parent not in seen:
+                seen.append(parent)
+    return tuple(seen)
 
 
 def _is_admin() -> bool:
@@ -146,8 +194,22 @@ def _require_admin_or_explain(action: str) -> bool:
     return False
 
 
-def _win_command_string(binary: Path, trigger: str, folder_placeholder: str) -> str:
-    return f'"{binary}" shell-trigger {trigger} --folder "{folder_placeholder}"'
+def _flag_for_target(target: str) -> str:
+    return "--file" if target == "file" else "--folder"
+
+
+def _win_command_string(
+    binary: Path,
+    trigger: str,
+    placeholder: str,
+    flag: str = "--folder",
+) -> str:
+    """Build the registry `command` value.
+
+    Default flag is `--folder` for backwards-compat with the existing folder
+    verbs; pass `flag="--file"` for file-targeted verbs.
+    """
+    return f'"{binary}" shell-trigger {trigger} {flag} "{placeholder}"'
 
 
 def _install_windows() -> int:
@@ -157,10 +219,11 @@ def _install_windows() -> int:
     import winreg
 
     binary = _copalpm_bin()
-    for parent in _WIN_PARENTS:
-        # %1 for "on a folder", %V for "background of a folder"
-        placeholder = "%V" if "Background" in parent else "%1"
-        for verb in VERBS:
+    for verb in VERBS:
+        flag = _flag_for_target(verb["target"])
+        for parent in _win_parents_for(verb["target"]):
+            # %1 for "on a folder/file", %V for "background of a folder".
+            placeholder = "%V" if "Background" in parent else "%1"
             key_path = f"{parent}\\{verb['id']}"
             with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
                 winreg.SetValue(k, "", winreg.REG_SZ, verb["title"])
@@ -171,12 +234,12 @@ def _install_windows() -> int:
             with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, cmd_path) as k:
                 winreg.SetValue(
                     k, "", winreg.REG_SZ,
-                    _win_command_string(binary, verb["trigger"], placeholder),
+                    _win_command_string(binary, verb["trigger"], placeholder, flag),
                 )
     print("Installed Copal right-click verbs to HKLM (system-wide, all users).")
     print()
     print("On Windows 11, custom verbs only appear in the legacy context menu:")
-    print("  - Shift+right-click on a folder, OR")
+    print("  - Shift+right-click on a folder or file, OR")
     print("  - Right-click then 'Show more options' (bottom of the modern menu).")
     print()
     print("If verbs still don't appear, restart Explorer:")
@@ -190,8 +253,10 @@ def _uninstall_windows() -> int:
     # Probe HKLM first — only require admin if there's actually something
     # there to remove. Lets users clean up stale HKCU entries (from older
     # installs) without an elevation prompt.
+    parents_all = _all_win_parents()
+
     has_hklm = False
-    for parent in _WIN_PARENTS:
+    for parent in parents_all:
         for verb in VERBS:
             try:
                 winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{parent}\\{verb['id']}").Close()
@@ -207,7 +272,7 @@ def _uninstall_windows() -> int:
 
     removed_hklm = 0
     if has_hklm:
-        for parent in _WIN_PARENTS:
+        for parent in parents_all:
             for verb in VERBS:
                 base = f"{parent}\\{verb['id']}"
                 for sub in ("command",):
@@ -225,7 +290,7 @@ def _uninstall_windows() -> int:
     # Even on Win11 24H2+ where they don't show in Explorer, they're clutter.
     # HKCU writes don't need admin.
     removed_hkcu = 0
-    for parent in _WIN_PARENTS:
+    for parent in parents_all:
         for verb in VERBS:
             base = f"{parent}\\{verb['id']}"
             for sub in ("command",):
@@ -255,8 +320,8 @@ def _status_windows() -> int:
     import winreg
 
     print("Windows shell integration:")
-    for parent in _WIN_PARENTS:
-        for verb in VERBS:
+    for verb in VERBS:
+        for parent in _win_parents_for(verb["target"]):
             key_path = f"{parent}\\{verb['id']}"
             try:
                 winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path).Close()
@@ -286,33 +351,62 @@ def _mac_template(name: str) -> str:
     return (Path(str(files("copalpm") / "assets" / "macos_workflow" / name))).read_text(encoding="utf-8")
 
 
+def _mac_template_exists(name: str) -> bool:
+    return Path(str(files("copalpm") / "assets" / "macos_workflow" / name)).exists()
+
+
+def _mac_template_names_for(verb: dict) -> tuple[str, str]:
+    """Return (info_plist_template_name, workflow_template_name) for a verb."""
+    if verb["target"] == "file":
+        return ("Info.plist.file.template", "document.wflow.file.template")
+    return ("Info.plist.template", "document.wflow.template")
+
+
 def _mac_info_plist(verb: dict) -> str:
-    return _mac_template("Info.plist.template").replace("__MENU_TITLE__", verb["title"])
+    info_name, _ = _mac_template_names_for(verb)
+    return _mac_template(info_name).replace("__MENU_TITLE__", verb["title"])
 
 
-def _mac_workflow_xml(binary: Path, trigger: str) -> str:
+def _mac_workflow_xml(binary: Path, verb: dict) -> str:
     # Force POSIX separators — this XML is consumed by macOS Automator, but the
     # installer may be cross-built (e.g. running tests on Windows).
-    shell_cmd = f'"{binary.as_posix()}" shell-trigger {trigger} --folder "$1"'
-    return _mac_template("document.wflow.template").replace("__COPALPM_COMMAND__", shell_cmd)
+    _, wflow_name = _mac_template_names_for(verb)
+    flag = _flag_for_target(verb["target"])
+    shell_cmd = f'"{binary.as_posix()}" shell-trigger {verb["trigger"]} {flag} "$1"'
+    return _mac_template(wflow_name).replace("__COPALPM_COMMAND__", shell_cmd)
 
 
 def _install_macos() -> int:
     binary = _copalpm_bin()
     _MAC_SERVICES_DIR.mkdir(parents=True, exist_ok=True)
+    skipped = []
     for verb in VERBS:
+        info_name, wflow_name = _mac_template_names_for(verb)
+        if not (_mac_template_exists(info_name) and _mac_template_exists(wflow_name)):
+            skipped.append(verb["title"])
+            continue
         bundle = _mac_bundle_path(verb)
         contents = bundle / "Contents"
         contents.mkdir(parents=True, exist_ok=True)
         (contents / "Info.plist").write_text(_mac_info_plist(verb), encoding="utf-8")
         (contents / "document.wflow").write_text(
-            _mac_workflow_xml(binary, verb["trigger"]), encoding="utf-8"
+            _mac_workflow_xml(binary, verb), encoding="utf-8"
         )
     subprocess.run(
         ["/System/Library/CoreServices/pbs", "-flush"],
         check=False, capture_output=True,
     )
-    print("Installed Copal Quick Actions. They appear in Finder under Services.")
+    installed_count = len(VERBS) - len(skipped)
+    print(f"Installed {installed_count} Copal Quick Action(s).")
+    print()
+    print("Find them in Finder by right-clicking a project folder (or a file inside one)")
+    print("→ Services or Quick Actions submenu.")
+    print()
+    print("If you don't see them, enable each verb in:")
+    print("  System Settings → Keyboard → Keyboard Shortcuts… → Services → Files and Folders")
+    print("Newly installed Services arrive unticked; Finder hides them until enabled.")
+    if skipped:
+        print(f"Skipped (template missing): {', '.join(skipped)}", file=sys.stderr)
     return 0
 
 
@@ -414,19 +508,188 @@ def _spawn_tui_in_terminal(folder: Path) -> None:
     )
 
 
+# ── Deliverable batch marker ─────────────────────────────────────────────────
+#
+# Windows Explorer fires the file-targeted verb once per selected file. To
+# group files selected together in one right-click into a single deliverable,
+# we drop a short-lived marker (5 s TTL) at <DATA_DIR>/.deliverable-batch.json
+# pointing at the deliverables[] index of the entry that's actively accepting
+# additions. Subsequent invocations within the TTL append to that entry's
+# `paths` list instead of creating a new entry.
+#
+# The cross-project guard is the `project_id` field: if a second invocation
+# resolves to a different project, the marker is ignored and a new entry is
+# created in the new project.
+
+_BATCH_MARKER_NAME = ".deliverable-batch.json"
+_BATCH_TTL_SECONDS = 5
+
+
+def _batch_marker_path() -> Path:
+    from .config import DATA_DIR
+    return DATA_DIR / _BATCH_MARKER_NAME
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(s: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _read_batch_marker() -> dict | None:
+    """Return the marker dict if present, well-formed, and not expired."""
+    path = _batch_marker_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid       = data.get("project_id")
+    idx       = data.get("deliverable_index")
+    expires_s = data.get("expires_at")
+    if not isinstance(pid, str) or not isinstance(idx, int) or not isinstance(expires_s, str):
+        return None
+    expires = _parse_iso(expires_s)
+    if expires is None or expires <= datetime.now(timezone.utc):
+        return None
+    return data
+
+
+def _write_batch_marker(project_id: str, deliverable_index: int) -> None:
+    """Atomically write the marker, refreshing its TTL."""
+    path    = _batch_marker_path()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=_BATCH_TTL_SECONDS))
+    payload = {
+        "project_id":        project_id,
+        "deliverable_index": deliverable_index,
+        "expires_at":        expires.isoformat().replace("+00:00", "Z"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=_BATCH_MARKER_NAME + ".tmp.",
+    )
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _clear_batch_marker() -> None:
+    """Best-effort delete; used by tests and shouldn't raise."""
+    try:
+        _batch_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# ── Mark-as-deliverable handler ──────────────────────────────────────────────
+
+def _cmd_mark_deliverable(args) -> int:
+    """Handle `copalpm shell-trigger mark-deliverable --file PATH`.
+
+    Resolves the file's owning project, then either creates a new deliverable
+    entry or appends to the most-recent one (when a fresh batch marker points
+    at the same project).
+    """
+    from .deliver_cli import _relativize, normalize_deliverables, _iso_now
+    from .project_lookup import find_project_for_path
+    from .project_record import load_yaml, save_yaml
+
+    if not args.file:
+        _notify("Copal", "mark-deliverable requires --file PATH", kind="error")
+        return 1
+
+    target = Path(args.file).resolve()
+    if not target.exists() or not target.is_file():
+        _notify("Copal", f"File not found: {target.name}", kind="error")
+        return 1
+
+    match = find_project_for_path(target)
+    if match is None:
+        _notify(
+            "Copal",
+            f"'{target.name}' is not inside a Copal project.",
+            kind="error",
+        )
+        return 1
+
+    yaml_path = match.project_root / "project.yaml"
+    if not yaml_path.exists():
+        _notify(
+            "Copal",
+            f"project.yaml missing for {match.project_name or match.project_id}.",
+            kind="error",
+        )
+        return 1
+
+    record = load_yaml(yaml_path)
+    normalize_deliverables(record)
+    deliverables = record.setdefault("deliverables", [])
+
+    stored_path = _relativize(target, match.project_root)
+    project_label = match.project_name or match.project_id
+
+    marker = _read_batch_marker()
+    can_append = (
+        marker is not None
+        and marker["project_id"] == match.project_id
+        and 0 <= marker["deliverable_index"] < len(deliverables)
+    )
+
+    if can_append:
+        idx = marker["deliverable_index"]
+        entry = deliverables[idx]
+        entry.setdefault("paths", []).append(stored_path)
+        save_yaml(yaml_path, record)
+        _write_batch_marker(match.project_id, idx)
+        n = len(entry["paths"])
+        _notify("Copal", f"Added '{target.stem}' to batch — {n} files now")
+        return 0
+
+    new_entry = {
+        "name":         target.stem,
+        "paths":        [stored_path],
+        "type":         "draft",
+        "recipient":    "internal",
+        "delivered_at": _iso_now(),
+        "notes":        "",
+    }
+    deliverables.append(new_entry)
+    save_yaml(yaml_path, record)
+    _write_batch_marker(match.project_id, len(deliverables) - 1)
+    _notify(
+        "Copal: marked as deliverable",
+        f"'{target.stem}' in {project_label}",
+    )
+    return 0
+
+
 # ── Hidden trigger handler (invoked by the OS shell verbs) ───────────────────
 
 def cmd_shell_trigger(args) -> int:
-    """Internal: invoked by the OS verbs with --folder PATH."""
+    """Internal: invoked by the OS verbs with --folder PATH or --file PATH."""
+    trigger = args.trigger
+
+    if trigger == "mark-deliverable":
+        return _cmd_mark_deliverable(args)
+
     from .time_cli import _find_project_id_from, _find_phase_from, _api, ServiceDownError, ApiError
-    from argparse import Namespace
 
     folder = Path(args.folder).resolve() if args.folder else Path.cwd()
     if not folder.exists():
         _notify("Copal", f"Folder not found: {folder}", kind="error")
         return 1
-
-    trigger = args.trigger
 
     if trigger == "new-project":
         # The TUI needs its own controlling terminal — sharing the parent's
