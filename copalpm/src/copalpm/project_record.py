@@ -30,8 +30,11 @@ from copalpm.project_doctor import find_orphan_sessions
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-VALID_TYPES      = {"personal", "tlc", "client"}
-VALID_CATEGORIES = {"tvc", "digital-signage", "b2b", "digital"}
+# `type` and `category` values are no longer enum-validated — templates own
+# the legal value set (see copalpm/templates.py). The enum check used to live
+# here as VALID_TYPES / VALID_CATEGORIES; removed when templates went
+# fully-dynamic (a user template declaring `type: r_and_d` would otherwise
+# break `copalpm record validate` for every project created from it).
 VALID_PHASES     = ["concept", "production", "delivery", "archive"]
 PHASE_ORDER      = {p: i for i, p in enumerate(VALID_PHASES)}
 
@@ -443,12 +446,6 @@ def cmd_validate(args):
     for field in ("id", "name", "type", "category", "created_at"):
         if not record.get(field):
             errors.append(f"missing required field: {field}")
-
-    # Enum checks
-    if record.get("type") and record["type"] not in VALID_TYPES:
-        errors.append(f"invalid type '{record['type']}'. Must be: {', '.join(VALID_TYPES)}")
-    if record.get("category") and record["category"] not in VALID_CATEGORIES:
-        errors.append(f"invalid category '{record['category']}'. Must be: {', '.join(VALID_CATEGORIES)}")
 
     # Phase log
     phase_log = record.get("phase_log") or []

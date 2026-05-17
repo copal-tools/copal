@@ -62,6 +62,11 @@ from .shell_integration import (
 )
 from .setup_cmd import cmd_setup, cmd_teardown
 from .project_lookup import cmd_whose
+from .template_cli import (
+    cmd_template_list,
+    cmd_template_export,
+    cmd_template_import,
+)
 
 
 # ── Parser construction ───────────────────────────────────────────────────────
@@ -118,11 +123,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--dir", help="Base directory (defaults to CWD)")
     p_init.add_argument("--inc", action="store_true",
                         help="Append auto-incremented _NNN suffix")
-    quick = p_init.add_mutually_exclusive_group()
-    quick.add_argument("--tactical", action="store_true",
-                       help="Quick init: Tactical preset")
-    quick.add_argument("--ds", action="store_true",
-                       help="Quick init: Digital Signage preset")
 
     s_proj.add_parser("list", help="List registered projects")
     p_stat = s_proj.add_parser("status", help="Summary table of all registered projects")
@@ -229,6 +229,27 @@ def _build_parser() -> argparse.ArgumentParser:
     p_whose.add_argument("--json", action="store_true",
                          help="Emit a JSON object (or `null` on miss) for scripts and editor integrations")
 
+    # template ───────────────────────────────────────────────────────────────
+    p_tmpl = groups.add_parser(
+        "template",
+        help="Project templates: list, export, import (editing happens in the TUI)",
+    )
+    s_tmpl = p_tmpl.add_subparsers(dest="cmd", required=True, metavar="<cmd>")
+
+    p_tlist = s_tmpl.add_parser("list", help="List installed templates")
+    p_tlist.add_argument("--json", action="store_true",
+                         help="Emit a JSON array of templates")
+
+    p_texp = s_tmpl.add_parser("export", help="Write a template's YAML to a file")
+    p_texp.add_argument("id", help="Template id (see `copalpm template list`)")
+    p_texp.add_argument("--out", metavar="PATH",
+                        help="Output file path (defaults to ./<id>.yaml)")
+
+    p_timp = s_tmpl.add_parser("import", help="Validate and install a template YAML")
+    p_timp.add_argument("path", help="Path to the template YAML file")
+    p_timp.add_argument("--force", action="store_true",
+                        help="Overwrite if a template with that id already exists")
+
     # task-tracker (hidden — daemon entry point invoked by the OS service) ──
     # argparse displays `help=SUPPRESS` subparsers as "==SUPPRESS==" in --help
     # output rather than hiding them. The standard workaround is to drop the
@@ -272,9 +293,8 @@ def main():
 
     if args.group == "project":
         if args.cmd == "init":
-            base   = Path(args.dir) if args.dir else Path.cwd()
-            preset = "tactical" if args.tactical else ("ds" if args.ds else None)
-            return cmd_init(args.name, base, args.inc, preset=preset)
+            base = Path(args.dir) if args.dir else Path.cwd()
+            return cmd_init(args.name, base, args.inc)
         if args.cmd == "list":
             return cmd_list()
         if args.cmd == "status":
@@ -339,6 +359,14 @@ def main():
 
     if args.group == "whose":
         return cmd_whose(args)
+
+    if args.group == "template":
+        dispatch = {
+            "list":   cmd_template_list,
+            "export": cmd_template_export,
+            "import": cmd_template_import,
+        }
+        return dispatch[args.cmd](args)
 
     # Unreachable — argparse rejects unknown groups before we get here
     ap.error(f"unknown group: {args.group}")

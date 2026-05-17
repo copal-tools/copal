@@ -92,6 +92,10 @@ copalpm shell-integration install   # add Copal verbs to right-click menus
 copalpm shell-integration uninstall # remove the OS shell verbs
 copalpm shell-integration status    # show installed verbs
 
+copalpm template list [--json]              # installed project templates
+copalpm template export <id> [--out PATH]   # write a template's YAML to a file
+copalpm template import <path> [--force]    # install a template YAML
+
 copalpm deliver <path> [...]       # log a delivered asset
 ```
 
@@ -201,12 +205,54 @@ CopalPM's directory contents:
 - `registry.json` — list of registered projects
 - `sessions.jsonl` — append-only session log
 - `current_session.json` — currently-running session (if any)
-- `templates.json` — user-defined project templates
+- `templates/` — one YAML file per project template (see [Templates](#templates))
 - `config.json` — service config (port, API key)
 
 `copalpm teardown` removes the service and shell verbs but leaves both
 directories untouched. To wipe CopalPM data, delete the directory above; to
 wipe CopalVX client data, delete `~/.copal/`.
+
+---
+
+## Templates
+
+Templates control what shows up in **New Project** — folder structure and a list of fields that the new project picks up. Each template is a self-contained YAML file at `<DATA_DIR>/templates/<NN>-<id>.yaml`; you author them in the TUI (`copalpm` → `[T]`) and can share them between machines as plain files.
+
+A template can declare any custom fields you want — VFX Supervisor, DI Pass, Pass Count, whatever. Custom fields land at the top level of the new project's `project.yaml`. Well-known names like `client`, `director`, `producer`, `budget`, `rate` flow into the standard nested slots in `project.yaml`.
+
+Folder paths support arbitrary depth via forward slashes:
+
+```yaml
+folders:
+  - 01_Intake
+  - 02_Workfiles/Plates
+  - 02_Workfiles/Renders/EXR
+  - 03_Exports/h264
+  - 03_Exports/prores
+```
+
+### Sharing templates
+
+```bash
+# List installed templates
+copalpm template list
+
+# Export a template to a file (defaults to ./<id>.yaml)
+copalpm template export tactical --out ~/Desktop/tactical.yaml
+
+# Import someone else's template
+copalpm template import ~/Downloads/vfx-shot.yaml
+
+# Overwrite an existing template by id
+copalpm template import ~/Downloads/tactical.yaml --force
+```
+
+You can also drop a template YAML directly into `<DATA_DIR>/templates/` — the next launch will pick it up. Imported files are validated; a malformed YAML or unsafe folder path (absolute, `..`, drive letter, `~`) is rejected with a clear error.
+
+### Upgrade note
+
+Pre-existing `templates.json` is migrated on first launch after upgrade. Each entry becomes one `templates/<NN>-<slug>.yaml`. The original `templates.json` is **renamed** (not deleted) to `templates.json.migrated-<date>.bak` as insurance.
+
 ---
 
 ## Timezone behavior

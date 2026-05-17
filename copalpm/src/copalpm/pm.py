@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from anyascii import anyascii
 
-from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG, TEMPLATES_FILE
+from copalpm.config import DATA_DIR, REGISTRY, SESSIONS_LOG
 
 
 DATA = DATA_DIR
@@ -128,70 +128,7 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
         print(f"    Please enter one of: {options}")
 
 
-# ── Templates ─────────────────────────────────────────────────────────────────
-
-DEFAULT_TEMPLATES: list[dict] = [
-    {
-        "name":          "Tactical",
-        "type":          "tlc",
-        "category":      "tvc",
-        "client":        "",
-        "director":      "",
-        "producer":      "",
-        "collaborators": [],
-        "folders":       ["01_Intake", "02_Workfiles", "03_Exports"],
-    },
-    {
-        "name":          "Digital Signage",
-        "type":          "tlc",
-        "category":      "digital-signage",
-        "client":        "",
-        "director":      None,
-        "producer":      None,
-        "collaborators": [],
-        "folders":       ["01_Intake", "02_Workfiles", "03_Exports"],
-    },
-]
-
-
-def load_templates() -> list[dict]:
-    """Load templates from disk; seed defaults on first run."""
-    if TEMPLATES_FILE.exists():
-        try:
-            return json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return list(DEFAULT_TEMPLATES)
-    save_templates(DEFAULT_TEMPLATES)
-    return list(DEFAULT_TEMPLATES)
-
-
-def save_templates(templates: list[dict]) -> None:
-    TEMPLATES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TEMPLATES_FILE.write_text(
-        json.dumps(templates, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-
-# ── Quick-init presets ─────────────────────────────────────────────────────────
-
-QUICK_PRESETS = {
-    "tactical": {
-        "type":          "tlc",
-        "category":      "tvc",
-        "client":        "",
-        "director":      "",
-        "producer":      "",
-        "collaborators": [],
-    },
-    "ds": {
-        "type":          "tlc",
-        "category":      "digital-signage",
-        "client":        "",
-        "director":      None,
-        "producer":      None,
-        "collaborators": [],
-    },
-}
+# Templates moved to copalpm.templates (per-file YAML + dynamic fields).
 
 _YAML_HEADER = (
     "# project.yaml — Project Record v1\n"
@@ -201,29 +138,55 @@ _YAML_HEADER = (
 
 # ── project.yaml builder ───────────────────────────────────────────────────────
 
-def build_project_record(pid: str, name: str, proj_type: str, category: str,
-                          client_name, client_contact, director, producer,
-                          deadline, budget, rate, est_hours,
-                          collaborators=None) -> dict:
-    return {
+def build_project_record(
+    pid: str,
+    name: str,
+    *,
+    field_values: dict | None = None,
+    deadline: str | None = None,
+) -> dict:
+    """Construct a project.yaml record.
+
+    All template-driven field values flow through ``field_values``. Well-known
+    keys (`client`, `director`, `producer`, `collaborators`, `budget`, `rate`,
+    `est_hours`, `client_contact`) unpack into nested sub-dicts via
+    ``templates.apply_to_record``. All other keys land at the top level — this
+    is how custom user-declared fields ride along.
+    """
+    field_values = field_values or {}
+
+    # Financial values get float-coerced if present (legacy contract).
+    fv = dict(field_values)
+    for key in ("budget", "rate", "est_hours"):
+        if fv.get(key) not in (None, "", []):
+            try:
+                fv[key] = float(fv[key])
+            except (TypeError, ValueError):
+                pass
+
+    record: dict = {
         "schema_version": 1,
 
-        # Identity
-        "id":       pid,
-        "name":     name,
-        "slug":     make_slug(name),
-        "type":     proj_type,
-        "category": category,
+        # Identity (structural — cannot be overridden by template fields)
+        "id":   pid,
+        "name": name,
+        "slug": make_slug(name),
 
-        # People
+        # Default values for type/category — replaced by field_values if the
+        # template declares them. Kept for backwards-compat with any project
+        # record that ends up here without those fields.
+        "type":     None,
+        "category": None,
+
+        # Nested containers (populated via UNPACK_TABLE from field_values)
         "client": {
-            "name":    client_name,
-            "contact": client_contact,
+            "name":    None,
+            "contact": None,
         },
         "people": {
-            "director":      director,
-            "producer":      producer,
-            "collaborators": collaborators if collaborators is not None else [],
+            "director":      None,
+            "producer":      None,
+            "collaborators": [],
         },
 
         # Timeline
@@ -236,9 +199,9 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
         # Financial
         "financial": {
             "currency":        "EUR",
-            "quoted_budget":   float(budget)    if budget    else None,
-            "rate_per_hour":   float(rate)      if rate      else None,
-            "estimated_hours": float(est_hours) if est_hours else None,
+            "quoted_budget":   None,
+            "rate_per_hour":   None,
+            "estimated_hours": None,
             "invoiced_amount": None,
             "invoiced_at":     None,
             "paid":            None,
@@ -264,10 +227,16 @@ def build_project_record(pid: str, name: str, proj_type: str, category: str,
         "notes": "",
     }
 
+    # Apply template-declared fields. Import locally to avoid a circular
+    # import at module load (templates → pm for make_slug).
+    from copalpm.templates import apply_to_record
+    apply_to_record(fv, record)
+    return record
+
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
-def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None = None):
+def cmd_init(name: str, base_dir: Path, use_increment: bool):
     if not slug_title(name):
         print(
             "error: project name must contain at least one letter or digit "
@@ -285,43 +254,27 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None 
     print(f"\nInitialising: {name}")
     print(f"ID:           {pid}\n")
 
-    if preset:
-        p              = QUICK_PRESETS[preset]
-        proj_type      = p["type"]
-        category       = p["category"]
-        client_name    = p["client"]
-        client_contact = None
-        director       = p["director"]
-        producer       = p["producer"]
-        collaborators  = p["collaborators"]
-        deadline = budget = rate = est_hours = None
-        print(f"  [{preset}]  {proj_type} / {category} / {client_name}")
-    else:
-        proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
-        category  = ask_choice(
-            "Category",
-            ["tvc", "digital-signage", "b2b", "digital"],
-            "tvc",
-        )
+    proj_type = ask_choice("Type", ["personal", "tlc", "client"], "tlc")
+    category  = ask_choice(
+        "Category",
+        ["tvc", "digital-signage", "b2b", "digital"],
+        "tvc",
+    )
 
-        client_name    = None
-        client_contact = None
-        if proj_type != "personal":
-            client_name    = ask("Client name")
-            client_contact = ask("Client contact (name or email)")
+    field_values: dict = {"type": proj_type, "category": category}
 
-        director      = ask("Director")
-        producer      = ask("Producer")
-        deadline      = ask("Deadline (YYYY-MM-DD)")
-        collaborators = None
+    if proj_type != "personal":
+        field_values["client"]         = ask("Client name")
+        field_values["client_contact"] = ask("Client contact (name or email)")
 
-        budget    = None
-        rate      = None
-        est_hours = None
-        if proj_type != "personal":
-            budget    = ask("Quoted budget (EUR)")
-            rate      = ask("Rate per hour (EUR)")
-            est_hours = ask("Estimated hours")
+    field_values["director"] = ask("Director")
+    field_values["producer"] = ask("Producer")
+    deadline                 = ask("Deadline (YYYY-MM-DD)")
+
+    if proj_type != "personal":
+        field_values["budget"]    = ask("Quoted budget (EUR)")
+        field_values["rate"]      = ask("Rate per hour (EUR)")
+        field_values["est_hours"] = ask("Estimated hours")
 
     # Create folder structure
     root.mkdir(parents=True, exist_ok=True)
@@ -329,11 +282,9 @@ def cmd_init(name: str, base_dir: Path, use_increment: bool, preset: str | None 
         (root / d).mkdir(exist_ok=True)
 
     # Write project.yaml
-    record    = build_project_record(pid, name, proj_type, category,
-                                     client_name, client_contact,
-                                     director, producer,
-                                     deadline, budget, rate, est_hours,
-                                     collaborators=collaborators)
+    record    = build_project_record(pid, name,
+                                     field_values=field_values,
+                                     deadline=deadline)
     yaml_path = root / "project.yaml"
     yaml_path.write_text(
         _YAML_HEADER + yaml.dump(record, default_flow_style=False, allow_unicode=True, sort_keys=False),
